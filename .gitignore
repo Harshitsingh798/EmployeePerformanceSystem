@@ -1,0 +1,7 @@
+bin/
+*.class
+*.log
+app.log
+my_evaluations_*.csv
+team_report.csv
+.Catched/
