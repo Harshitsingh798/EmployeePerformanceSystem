@@ -86,8 +86,5 @@ lib/                         # JAR dependencies
 ER: `users (MANAGER/EMPLOYEE) 1:N evaluations, goals, feedback | teams M:N users`
 See `db/schema.sql` for full schema.
 
-## Team
-- [Your Name] - [Role]
-
 ## License
 Academic project for GUVI Hackathon Review 1.
