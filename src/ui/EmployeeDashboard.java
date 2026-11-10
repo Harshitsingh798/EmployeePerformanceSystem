@@ -8,6 +8,7 @@ import model.Feedback;
 import model.Goal;
 import util.FileLogger;
 import util.ReportExporter;
+import ui.components.ChartPanel;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
@@ -23,7 +24,8 @@ public class EmployeeDashboard extends JFrame {
     private final String employeeName;
     private final int employeeId;
     private DefaultTableModel trackingModel, feedbackModel, goalsModel;
-    private JLabel avgLabel, chartLabel;
+    private JLabel avgLabel;
+    private JPanel lineSlot, pieSlot;
 
     public EmployeeDashboard(String employeeName, int employeeId) {
         this.employeeName = employeeName;
@@ -66,14 +68,9 @@ public class EmployeeDashboard extends JFrame {
         avgLabel = new JLabel("Average Score: loading...", SwingConstants.CENTER);
         avgLabel.setFont(new Font("Segoe UI", Font.BOLD, 13));
         p.add(avgLabel, BorderLayout.NORTH);
-        JPanel chart = new JPanel();
-        chart.setBackground(new Color(232, 245, 233));
-        chart.setBorder(BorderFactory.createTitledBorder("Your Score Trend (Line Chart from DB)"));
-        chart.setPreferredSize(new Dimension(800, 150));
-        chartLabel = new JLabel("Loading...");
-        chartLabel.setFont(new Font("Segoe UI", Font.PLAIN, 13));
-        chart.add(chartLabel);
-        p.add(chart, BorderLayout.CENTER);
+        lineSlot = new JPanel(new BorderLayout());
+        lineSlot.setBorder(BorderFactory.createTitledBorder("Your Score Trend (Line Chart)"));
+        p.add(lineSlot, BorderLayout.CENTER);
         String[] cols = {"Eval ID", "Date", "Comm", "Tech", "Punct", "Team", "Score", "Comments"};
         trackingModel = new DefaultTableModel(cols, 0) { public boolean isCellEditable(int r, int c) { return false; } };
         p.add(new JScrollPane(new JTable(trackingModel)), BorderLayout.SOUTH);
@@ -111,24 +108,20 @@ public class EmployeeDashboard extends JFrame {
     }
 
     private JPanel createReportsPanel() {
-        JPanel p = new JPanel(new BorderLayout());
-        JLabel title = new JLabel("Personal Performance Report", SwingConstants.CENTER);
-        title.setFont(new Font("Segoe UI", Font.BOLD, 14));
-        p.add(title, BorderLayout.NORTH);
-        JPanel chart = new JPanel();
-        chart.setBackground(new Color(255, 243, 224));
-        chart.setBorder(BorderFactory.createTitledBorder("Your Performance Breakdown"));
-        chart.setPreferredSize(new Dimension(800, 250));
-        JLabel reportLabel = new JLabel("Loading report...");
-        reportLabel.setName("reportLabel");
-        chart.add(reportLabel);
-        p.add(chart, BorderLayout.CENTER);
+        JPanel p = new JPanel(new GridLayout(1, 2, 10, 10));
+        p.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        lineSlot = new JPanel(new BorderLayout());
+        lineSlot.setBorder(BorderFactory.createTitledBorder("Your Score Trend (Line)"));
+        pieSlot = new JPanel(new BorderLayout());
+        pieSlot.setBorder(BorderFactory.createTitledBorder("Criteria Breakdown (Pie)"));
+        p.add(lineSlot); p.add(pieSlot);
         JButton export = new JButton("Export My Evaluations to CSV (File I/O)");
         export.addActionListener(e -> exportMyReport());
+        JPanel wrap = new JPanel(new BorderLayout());
+        wrap.add(p, BorderLayout.CENTER);
         JPanel south = new JPanel(); south.add(export);
-        p.add(south, BorderLayout.SOUTH);
-        p.putClientProperty("reportLabel", reportLabel);
-        return p;
+        wrap.add(south, BorderLayout.SOUTH);
+        return wrap;
     }
 
     private void loadAllAsync(JLabel status) {
@@ -164,13 +157,17 @@ public class EmployeeDashboard extends JFrame {
                     if (!list.isEmpty()) {
                         double avg = list.stream().mapToDouble(Evaluation::getOverallScore).average().orElse(0);
                         avgLabel.setText(String.format("Average Score: %.2f / 5.0  (%d evaluations)", avg, list.size()));
-                        StringBuilder sb = new StringBuilder("<html>");
-                        for (Evaluation e : list) sb.append(e.getEvalDate()).append(": ").append(String.format("%.1f", e.getOverallScore())).append(" &nbsp; ");
-                        sb.append("</html>");
-                        chartLabel.setText(sb.toString());
+                        java.util.List<LocalDate> dates = new java.util.ArrayList<>();
+                        java.util.List<Double> scores = new java.util.ArrayList<>();
+                        for (Evaluation e : list) { dates.add(e.getEvalDate()); scores.add(e.getOverallScore()); }
+                        lineSlot.removeAll();
+                        lineSlot.add(ChartPanel.line("Your Score Over Time", dates, scores), BorderLayout.CENTER);
+                        lineSlot.revalidate(); lineSlot.repaint();
                     } else {
                         avgLabel.setText("No evaluations yet for you.");
-                        chartLabel.setText("No data - ask your manager for an evaluation.");
+                        lineSlot.removeAll();
+                        lineSlot.add(new JLabel("No data - ask your manager for an evaluation.", SwingConstants.CENTER));
+                        lineSlot.revalidate();
                     }
                 } catch (Exception ex) { avgLabel.setText("Load failed: " + ex.getMessage()); }
             }
@@ -196,6 +193,14 @@ public class EmployeeDashboard extends JFrame {
                 try {
                     goalsModel.setRowCount(0);
                     for (Goal g : get()) goalsModel.addRow(new Object[]{g.getGoalId(), g.getTitle(), g.getTargetDate(), g.getStatus(), g.isPersonal() ? "Yes" : "No"});
+                    // Pie chart: goals by status
+                    java.util.Map<String, Integer> statusCount = new java.util.HashMap<>();
+                    for (Goal g : get()) statusCount.merge(g.getStatus(), 1, Integer::sum);
+                    java.util.Map<String, Double> pieData = new java.util.LinkedHashMap<>();
+                    for (var e : statusCount.entrySet()) pieData.put(e.getKey(), (double) e.getValue());
+                    pieSlot.removeAll();
+                    pieSlot.add(ChartPanel.pie("Goal Status Distribution", pieData), BorderLayout.CENTER);
+                    pieSlot.revalidate(); pieSlot.repaint();
                 } catch (Exception ex) {}
             }
         }.execute();

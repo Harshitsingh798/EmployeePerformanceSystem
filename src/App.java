@@ -8,11 +8,10 @@ import javax.swing.UIManager;
  */
 public class App {
     public static void main(String[] args) {
-        // Try FlatLaf look and feel if available, else system default
         try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            com.formdev.flatlaf.FlatLightLaf.setup();
         } catch (Exception e) {
-            System.out.println("Could not set look and feel: " + e.getMessage());
+            try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
         }
 
         SwingUtilities.invokeLater(() -> {

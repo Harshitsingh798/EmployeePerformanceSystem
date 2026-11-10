@@ -1,6 +1,6 @@
 # Performetrics - Employee Performance Evaluation System
 
-> GUVI HCL Hackathon | Problem #18 | Core Java (Swing + JDBC)
+> GUVI HCL Hackathon | Problem #18 | Core Java (Swing + JDBC + JFreeChart)
 
 A desktop application for managers to evaluate employee performance, set goals, provide feedback, and generate reports — while employees track progress, view feedback, and manage personal goals.
 
@@ -10,35 +10,38 @@ A desktop application for managers to evaluate employee performance, set goals, 
 - **Performance Evaluation** - Table listing evaluations with criteria (Communication, Technical, Punctuality, Teamwork) and auto-calculated score
 - **Goal Setting** - Set goals for employees with target dates
 - **Feedback Provision** - Give feedback with ratings and comments
-- **Performance Reports** - Graphical representation (JFreeChart) of team performance
+- **Performance Reports** - Graphical representation (JFreeChart bar/pie) of team performance
 - **Team Management** - Manage team members and assign roles
 
 ### Employee Dashboard
-- **Performance Tracking** - Chart showing progress over time (line chart)
+- **Performance Tracking** - Line chart showing progress over time
 - **Feedback History** - List of feedback received from managers
 - **Personal Goals** - Set and track personal goals with status
-- **Performance Reports** - Graphical self-assessment view + CSV export
+- **Performance Reports** - Pie chart breakdown + CSV export
 
 ## Tech Stack
 - **Language:** Java 17
-- **UI:** Java Swing (FlatLaf)
+- **UI:** Java Swing + FlatLaf (modern look)
 - **Database:** MySQL 8.0 + JDBC (mysql-connector-j)
 - **Charts:** JFreeChart 1.5.x
-- **Concepts Covered:** OOP (Inheritance, Polymorphism, Interfaces), Collections & Generics, Exception Handling (custom), File I/O, Multithreading (SwingWorker + synchronized Singleton)
+- **Security:** SHA-256 password hashing
+- **Concepts:** OOP, Collections & Generics, Exception Handling, File I/O, Multithreading (SwingWorker)
 
 ## Project Structure
 ```
 src/
-├── App.java                 # Entry point
-├── model/                   # User, Manager, Employee, Evaluation, Goal, Feedback
+├── App.java                 # Entry point with FlatLaf theme
+├── model/                   # User, Manager, Employee, Evaluation, Goal, Feedback, Team
 ├── dao/                     # DAO<T> interface, DatabaseConnection (Singleton), *DAO
-├── service/                 # Business logic
+├── service/                 # ReportService
 ├── ui/                      # LoginFrame, ManagerDashboard, EmployeeDashboard
-├── util/                    # DBConfig, FileLogger, ReportExporter
+│   └── components/          # ChartPanel (JFreeChart wrapper)
+├── util/                    # DBConfig, FileLogger, ReportExporter, PasswordUtil, Validator
 └── exception/               # InvalidRatingException, GoalDeadlineException
 db/
 ├── schema.sql               # Database schema
-└── seed_data.sql            # Sample data
+├── seed_data.sql            # Sample data
+└── migration_v2.sql         # Hash passwords
 lib/                         # JAR dependencies
 ```
 
@@ -52,14 +55,15 @@ lib/                         # JAR dependencies
 ### Steps
 1. Clone the repository:
    ```bash
-   git clone <your-github-link>
+   git clone https://github.com/Harshitsingh798/EmployeePerformanceSystem.git
    ```
 2. Create database:
    ```bash
    mysql -u root -p < db/schema.sql
    mysql -u root -p < db/seed_data.sql
+   mysql -u root -p < db/migration_v2.sql
    ```
-   Or run `schema.sql` and `seed_data.sql` in MySQL Workbench.
+   Or run `schema.sql`, `seed_data.sql`, `migration_v2.sql` in MySQL Workbench.
 
 3. Configure database (optional):
    Edit `db.properties`:
@@ -70,13 +74,13 @@ lib/                         # JAR dependencies
    ```
 
 4. Add dependencies to `lib/`:
-   - `mysql-connector-j-8.3.0.jar`
-   - `jfreechart-1.5.4.jar` (optional for charts)
-   - `flatlaf-3.4.1.jar` (optional for modern look)
+   - `mysql-connector-j-8.0.33.jar`
+   - `jfreechart-1.5.4.jar`
+   - `flatlaf-3.4.1.jar`
 
 5. Run:
    - Open in VS Code → Run `src/App.java`
-   - Or: `javac -d bin -sourcepath src src/App.java && java -cp bin App`
+   - Or: `javac -cp "lib/*" -d bin -sourcepath src src/App.java && java -cp "bin;lib/*" App`
 
 ### Demo Credentials
 - **Manager:** `manager@company.com` / `manager123`
@@ -87,4 +91,4 @@ ER: `users (MANAGER/EMPLOYEE) 1:N evaluations, goals, feedback | teams M:N users
 See `db/schema.sql` for full schema.
 
 ## License
-Academic project for GUVI Hackathon Review 1.
+Academic project for GUVI Hackathon Review 2.

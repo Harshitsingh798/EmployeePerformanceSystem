@@ -3,6 +3,7 @@ package ui;
 import dao.DatabaseConnection;
 import dao.UserDAO;
 import model.User;
+import util.PasswordUtil;
 
 import javax.swing.*;
 import java.awt.*;
@@ -85,7 +86,10 @@ public class LoginFrame extends JFrame {
         User authenticated = null;
         try {
             if (DatabaseConnection.getInstance().testConnection()) {
-                authenticated = new UserDAO().authenticate(email, password, role);
+                User raw = new UserDAO().getByEmail(email);
+                if (raw != null && PasswordUtil.verify(password, raw.getPassword()) && raw.getRole().equals(role)) {
+                    authenticated = raw;
+                }
             }
         } catch (Exception ex) {
             System.err.println("DB auth error: " + ex.getMessage());

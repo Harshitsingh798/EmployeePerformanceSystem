@@ -4,11 +4,13 @@ import dao.EvaluationDAO;
 import dao.FeedbackDAO;
 import dao.GoalDAO;
 import dao.UserDAO;
+import dao.TeamDAO;
 import model.Evaluation;
 import model.Feedback;
 import model.Goal;
 import model.User;
 import util.FileLogger;
+import ui.components.ChartPanel;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
@@ -25,6 +27,8 @@ public class ManagerDashboard extends JFrame {
     private final int managerId;
     private DefaultTableModel evalModel, goalModel, feedbackModel, teamModel;
     private JLabel statusLabel;
+    private JPanel reportBarSlot, reportPieSlot;
+    private JTable teamTable;
 
     public ManagerDashboard(String managerName, int managerId) {
         this.managerName = managerName;
@@ -114,43 +118,37 @@ public class ManagerDashboard extends JFrame {
     }
 
     private JPanel createReportsPanel() {
-        JPanel p = new JPanel(new BorderLayout());
-        JLabel label = new JLabel("Performance Reports - Live from DB (SwingWorker)", SwingConstants.CENTER);
-        label.setFont(new Font("Segoe UI", Font.BOLD, 14));
-        p.add(label, BorderLayout.NORTH);
-        JPanel chart = new JPanel();
-        chart.setBackground(new Color(240, 244, 255));
-        chart.setBorder(BorderFactory.createTitledBorder("Team Averages (calculated from evaluations)"));
-        chart.setPreferredSize(new Dimension(800, 250));
-        chart.setLayout(new BoxLayout(chart, BoxLayout.Y_AXIS));
-        JLabel chartLabel = new JLabel("Loading team stats...");
-        chartLabel.setName("chartLabel");
-        chartLabel.setFont(new Font("Segoe UI", Font.PLAIN, 13));
-        chartLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        chart.add(Box.createVerticalGlue());
-        chart.add(chartLabel);
-        chart.add(Box.createVerticalGlue());
-        // Store reference via client property
-        p.putClientProperty("chartLabel", chartLabel);
-        p.add(chart, BorderLayout.CENTER);
+        JPanel p = new JPanel(new GridLayout(1, 2, 10, 10));
+        p.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        reportBarSlot = new JPanel(new BorderLayout());
+        reportBarSlot.setBorder(BorderFactory.createTitledBorder("Team Average Scores (Bar)"));
+        reportPieSlot = new JPanel(new BorderLayout());
+        reportPieSlot.setBorder(BorderFactory.createTitledBorder("Criteria Breakdown (Pie)"));
+        p.add(reportBarSlot); p.add(reportPieSlot);
         JButton exportBtn = new JButton("Export Team Report to CSV (File I/O)");
         exportBtn.addActionListener(e -> exportReport());
+        JPanel wrap = new JPanel(new BorderLayout());
+        wrap.add(p, BorderLayout.CENTER);
         JPanel south = new JPanel();
         south.add(exportBtn);
-        p.add(south, BorderLayout.SOUTH);
-        return p;
+        wrap.add(south, BorderLayout.SOUTH);
+        return wrap;
     }
 
     private JPanel createTeamPanel() {
         JPanel p = new JPanel(new BorderLayout());
         String[] cols = {"User ID", "Name", "Role", "Department", "Designation", "Email"};
         teamModel = new DefaultTableModel(cols, 0) { public boolean isCellEditable(int r, int c) { return false; } };
-        p.add(new JScrollPane(new JTable(teamModel)), BorderLayout.CENTER);
+        teamTable = new JTable(teamModel);
+        p.add(new JScrollPane(teamTable), BorderLayout.CENTER);
         JPanel btn = new JPanel();
+        JButton addMemberBtn = new JButton("Add Member to Team");
+        addMemberBtn.addActionListener(e -> showAddMemberDialog(false));
+        JButton assignRoleBtn = new JButton("Assign Role");
+        assignRoleBtn.addActionListener(e -> showAddMemberDialog(true));
         JButton refreshBtn = new JButton("Refresh");
         refreshBtn.addActionListener(e -> loadTeamAsync());
-        btn.add(refreshBtn);
-        btn.add(new JLabel("(Add member via DB or future dialog)"));
+        btn.add(addMemberBtn); btn.add(assignRoleBtn); btn.add(refreshBtn);
         p.add(btn, BorderLayout.SOUTH);
         return p;
     }
@@ -229,47 +227,82 @@ public class ManagerDashboard extends JFrame {
     }
 
     private void loadReportAsync() {
-        new SwingWorker<String, Void>() {
-            protected String doInBackground() throws Exception {
+        new SwingWorker<Object[], Void>() {
+            protected Object[] doInBackground() throws Exception {
                 EvaluationDAO dao = new EvaluationDAO();
                 java.util.Map<Integer, List<Evaluation>> grouped = dao.getGroupedByEmployee();
-                if (grouped.isEmpty()) return "No evaluation data yet.";
-                StringBuilder sb = new StringBuilder("<html>");
+                java.util.Map<String, Double> barData = new java.util.LinkedHashMap<>();
+                java.util.List<Evaluation> all = dao.getAll();
+                double cSum = 0, tSum = 0, pSum = 0, wSum = 0;
                 for (var entry : grouped.entrySet()) {
                     double avg = entry.getValue().stream().mapToDouble(Evaluation::getOverallScore).average().orElse(0);
                     String name = entry.getValue().get(0).getEmployeeName();
                     if (name == null) name = "Emp #" + entry.getKey();
-                    sb.append(String.format("%s: %.2f/5.0 (%d evals) &nbsp;&nbsp;|&nbsp;&nbsp; ", name, avg, entry.getValue().size()));
+                    barData.put(name, avg);
                 }
-                sb.append("</html>");
-                return sb.toString();
+                for (Evaluation e : all) { cSum += e.getCommunication(); tSum += e.getTechnical(); pSum += e.getPunctuality(); wSum += e.getTeamwork(); }
+                java.util.Map<String, Double> pieData = new java.util.LinkedHashMap<>();
+                if (!all.isEmpty()) {
+                    int n = all.size();
+                    pieData.put("Communication", cSum / n);
+                    pieData.put("Technical", tSum / n);
+                    pieData.put("Punctuality", pSum / n);
+                    pieData.put("Teamwork", wSum / n);
+                }
+                return new Object[]{barData, pieData};
             }
+            @SuppressWarnings("unchecked")
             protected void done() {
                 try {
-                    String html = get();
-                    // Find chartLabel in the reports tab
-                    for (Component c : getContentPane().getComponents()) {
-                        if (c instanceof JTabbedPane) {
-                            JTabbedPane tp = (JTabbedPane) c;
-                            for (int i = 0; i < tp.getTabCount(); i++) {
-                                if ("Performance Reports".equals(tp.getTitleAt(i))) {
-                                    JPanel p = (JPanel) tp.getComponentAt(i);
-                                    for (Component inner : p.getComponents()) {
-                                        if (inner instanceof JPanel) {
-                                            for (Component cc : ((JPanel) inner).getComponents()) {
-                                                if (cc instanceof JLabel && "chartLabel".equals(cc.getName())) {
-                                                    ((JLabel) cc).setText(html);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (Exception ignored) {}
+                    Object[] res = get();
+                    reportBarSlot.removeAll();
+                    reportBarSlot.add(ChartPanel.bar("Avg Score per Employee", "Score", (java.util.Map<String, Double>) res[0]), BorderLayout.CENTER);
+                    reportPieSlot.removeAll();
+                    reportPieSlot.add(ChartPanel.pie("Criteria Averages", (java.util.Map<String, Double>) res[1]), BorderLayout.CENTER);
+                    reportBarSlot.revalidate(); reportBarSlot.repaint();
+                    reportPieSlot.revalidate(); reportPieSlot.repaint();
+                } catch (Exception ex) { statusLabel.setText("  Report load failed: " + ex.getMessage()); }
             }
         }.execute();
+    }
+
+    private void showAddMemberDialog(boolean updateOnly) {
+        JDialog d = new JDialog(this, updateOnly ? "Update Member Role" : "Add Member to Team", true);
+        d.setLayout(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5,5,5,5); gbc.fill = GridBagConstraints.HORIZONTAL;
+        JTextField teamField = new JTextField(10); teamField.setText("1");
+        JTextField empField = new JTextField(10);
+        JTextField roleField = new JTextField(15); roleField.setText(updateOnly ? "Lead Developer" : "Developer");
+        int y = 0;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Team ID:"), gbc); gbc.gridx=1; d.add(teamField, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Employee ID:"), gbc); gbc.gridx=1; d.add(empField, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Role:"), gbc); gbc.gridx=1; d.add(roleField, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; gbc.gridwidth=2;
+        JButton save = new JButton("Save");
+        save.addActionListener(e -> {
+            try {
+                int teamId = Integer.parseInt(teamField.getText().trim());
+                int empId = Integer.parseInt(empField.getText().trim());
+                String role = roleField.getText().trim();
+                TeamDAO dao = new TeamDAO();
+                boolean ok;
+                if (updateOnly) {
+                    dao.removeMember(teamId, empId);
+                    ok = dao.addMember(teamId, empId, role);
+                } else {
+                    ok = dao.addMember(teamId, empId, role);
+                }
+                if (ok) {
+                    FileLogger.logInfo("Team", "Member " + empId + " role '" + role + "' in team " + teamId);
+                    JOptionPane.showMessageDialog(d, "Saved!");
+                    d.dispose(); loadTeamAsync();
+                } else JOptionPane.showMessageDialog(d, "Already a member or team not found");
+            } catch (NumberFormatException ex) { JOptionPane.showMessageDialog(d, "Enter valid IDs"); }
+            catch (Exception ex) { JOptionPane.showMessageDialog(d, "Failed: " + ex.getMessage()); }
+        });
+        d.add(save, gbc);
+        d.pack(); d.setLocationRelativeTo(this); d.setVisible(true);
     }
 
     // --- Dialogs for adding data ---
