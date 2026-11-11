@@ -10,6 +10,7 @@ import model.Feedback;
 import model.Goal;
 import model.User;
 import util.FileLogger;
+import util.Icons;
 import ui.components.ChartPanel;
 
 import javax.swing.*;
@@ -72,19 +73,68 @@ public class ManagerDashboard extends JFrame {
 
     private JPanel createEvaluationPanel() {
         JPanel p = new JPanel(new BorderLayout());
+        JPanel top = new JPanel(new BorderLayout());
+        JTextField searchField = new JTextField(20);
+        searchField.setToolTipText("Search by Employee Name or Comments");
+        searchField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            public void insertUpdate(javax.swing.event.DocumentEvent e) { filterEvaluations(searchField.getText()); }
+            public void removeUpdate(javax.swing.event.DocumentEvent e) { filterEvaluations(searchField.getText()); }
+            public void changedUpdate(javax.swing.event.DocumentEvent e) {}
+        });
+        top.add(new JLabel("Search: "), BorderLayout.WEST);
+        top.add(searchField, BorderLayout.CENTER);
+        p.add(top, BorderLayout.NORTH);
         String[] cols = {"Eval ID", "Employee", "Comm", "Tech", "Punct", "Team", "Score", "Date", "Comments"};
         evalModel = new DefaultTableModel(cols, 0) { public boolean isCellEditable(int r, int c) { return false; } };
         p.add(new JScrollPane(new JTable(evalModel)), BorderLayout.CENTER);
         JPanel btn = new JPanel();
         JButton addBtn = new JButton("Add Evaluation");
         addBtn.addActionListener(e -> showAddEvaluationDialog());
+        JButton editBtn = new JButton("Edit Selected");
+        editBtn.addActionListener(e -> editSelectedEvaluation());
         JButton refreshBtn = new JButton("Refresh");
         refreshBtn.addActionListener(e -> loadEvaluationsAsync());
         JButton deleteBtn = new JButton("Delete Selected");
         deleteBtn.addActionListener(e -> deleteSelectedEvaluation());
-        btn.add(addBtn); btn.add(refreshBtn); btn.add(deleteBtn);
+        util.Icons.styleButton(addBtn, "Add", new Color(41, 98, 255), Color.WHITE);
+        util.Icons.styleButton(editBtn, "Edit", new Color(255, 152, 0), Color.WHITE);
+        util.Icons.styleButton(deleteBtn, "Delete", new Color(220, 53, 69), Color.WHITE);
+        util.Icons.styleButton(refreshBtn, "Refresh", new Color(40, 167, 69), Color.WHITE);
+        btn.add(addBtn); btn.add(editBtn); btn.add(refreshBtn); btn.add(deleteBtn);
         p.add(btn, BorderLayout.SOUTH);
         return p;
+    }
+
+    private void filterEvaluations(String text) {
+        if (text.trim().isEmpty()) {
+            loadEvaluationsAsync();
+            return;
+        }
+        new SwingWorker<List<Evaluation>, Void>() {
+            protected List<Evaluation> doInBackground() throws Exception {
+                List<Evaluation> all = new EvaluationDAO().getAll();
+                List<Evaluation> filtered = new java.util.ArrayList<>();
+                String query = text.toLowerCase();
+                for (Evaluation e : all) {
+                    if ((e.getEmployeeName() != null && e.getEmployeeName().toLowerCase().contains(query)) ||
+                        (e.getComments() != null && e.getComments().toLowerCase().contains(query))) {
+                        filtered.add(e);
+                    }
+                }
+                return filtered;
+            }
+            protected void done() {
+                try {
+                    evalModel.setRowCount(0);
+                    for (Evaluation e : get()) {
+                        evalModel.addRow(new Object[]{e.getEvalId(), e.getEmployeeName() != null ? e.getEmployeeName() : String.valueOf(e.getEmployeeId()),
+                                e.getCommunication(), e.getTechnical(), e.getPunctuality(), e.getTeamwork(),
+                                String.format("%.2f", e.getOverallScore()), e.getEvalDate(), e.getComments()});
+                    }
+                    statusLabel.setText("  Filtered: " + get().size() + " evaluations");
+                } catch (Exception ex) { statusLabel.setText("  Filter failed: " + ex.getMessage()); }
+            }
+        }.execute();
     }
 
     private JPanel createGoalPanel() {
@@ -97,7 +147,9 @@ public class ManagerDashboard extends JFrame {
         addBtn.addActionListener(e -> showAddGoalDialog());
         JButton refreshBtn = new JButton("Refresh");
         refreshBtn.addActionListener(e -> loadGoalsAsync());
-        btn.add(addBtn); btn.add(refreshBtn);
+        JButton editBtn = new JButton("Edit");
+        editBtn.addActionListener(e -> editSelectedGoal());
+        btn.add(addBtn); btn.add(editBtn); btn.add(refreshBtn);
         p.add(btn, BorderLayout.SOUTH);
         return p;
     }
@@ -112,7 +164,9 @@ public class ManagerDashboard extends JFrame {
         addBtn.addActionListener(e -> showAddFeedbackDialog());
         JButton refreshBtn = new JButton("Refresh");
         refreshBtn.addActionListener(e -> loadFeedbackAsync());
-        btn.add(addBtn); btn.add(refreshBtn);
+        JButton editBtn = new JButton("Edit");
+        editBtn.addActionListener(e -> editSelectedFeedback());
+        btn.add(addBtn); btn.add(editBtn); btn.add(refreshBtn);
         p.add(btn, BorderLayout.SOUTH);
         return p;
     }
@@ -412,16 +466,152 @@ public class ManagerDashboard extends JFrame {
         d.pack(); d.setLocationRelativeTo(this); d.setVisible(true);
     }
 
+    private void editSelectedEvaluation() {
+        int row = evalModel.getRowCount();
+        if (row == 0) { JOptionPane.showMessageDialog(this, "No evaluations to edit"); return; }
+        String input = JOptionPane.showInputDialog(this, "Enter Eval ID to edit:");
+        if (input == null || input.trim().isEmpty()) return;
+        try {
+            int id = Integer.parseInt(input.trim());
+            Evaluation e = new EvaluationDAO().getById(id);
+            if (e == null) { JOptionPane.showMessageDialog(this, "Not found"); return; }
+            showEditEvaluationDialog(e);
+        } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage()); }
+    }
+
+    private void showEditEvaluationDialog(Evaluation e) {
+        JDialog d = new JDialog(this, "Edit Evaluation #" + e.getEvalId(), true);
+        d.setLayout(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5,5,5,5); gbc.fill = GridBagConstraints.HORIZONTAL;
+        JComboBox<Integer> comm = new JComboBox<>(new Integer[]{1,2,3,4,5});
+        JComboBox<Integer> tech = new JComboBox<>(new Integer[]{1,2,3,4,5});
+        JComboBox<Integer> punct = new JComboBox<>(new Integer[]{1,2,3,4,5});
+        JComboBox<Integer> team = new JComboBox<>(new Integer[]{1,2,3,4,5});
+        JTextArea comments = new JTextArea(3, 20);
+        comm.setSelectedItem(e.getCommunication());
+        tech.setSelectedItem(e.getTechnical());
+        punct.setSelectedItem(e.getPunctuality());
+        team.setSelectedItem(e.getTeamwork());
+        comments.setText(e.getComments() != null ? e.getComments() : "");
+        int y=0;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Communication:"), gbc); gbc.gridx=1; d.add(comm, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Technical:"), gbc); gbc.gridx=1; d.add(tech, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Punctuality:"), gbc); gbc.gridx=1; d.add(punct, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Teamwork:"), gbc); gbc.gridx=1; d.add(team, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Comments:"), gbc); gbc.gridx=1; d.add(new JScrollPane(comments), gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; gbc.gridwidth=2;
+        JButton save = new JButton("Update");
+        save.addActionListener(ev -> {
+            try {
+                e.setCommunication((int)comm.getSelectedItem());
+                e.setTechnical((int)tech.getSelectedItem());
+                e.setPunctuality((int)punct.getSelectedItem());
+                e.setTeamwork((int)team.getSelectedItem());
+                e.setComments(comments.getText().trim());
+                e.setOverallScore(e.calculateScore());
+                new EvaluationDAO().update(e);
+                FileLogger.logInfo("Evaluation", "Updated eval #" + e.getEvalId());
+                JOptionPane.showMessageDialog(d, "Updated! Score: " + String.format("%.2f", e.getOverallScore()));
+                d.dispose();
+                loadEvaluationsAsync(); loadReportAsync();
+            } catch (Exception ex) { JOptionPane.showMessageDialog(d, "Failed: " + ex.getMessage()); }
+        });
+        d.add(save, gbc);
+        d.pack(); d.setLocationRelativeTo(this); d.setVisible(true);
+    }
+
+    private void editSelectedGoal() {
+        int row = goalModel.getRowCount();
+        if (row == 0) { JOptionPane.showMessageDialog(this, "No goals to edit"); return; }
+        String input = JOptionPane.showInputDialog(this, "Enter Goal ID to edit:");
+        if (input == null || input.trim().isEmpty()) return;
+        try {
+            int id = Integer.parseInt(input.trim());
+            Goal g = new GoalDAO().getById(id);
+            if (g == null) { JOptionPane.showMessageDialog(this, "Not found"); return; }
+            showEditGoalDialog(g);
+        } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage()); }
+    }
+
+    private void showEditGoalDialog(Goal g) {
+        JDialog d = new JDialog(this, "Edit Goal #" + g.getGoalId(), true);
+        d.setLayout(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5,5,5,5); gbc.fill = GridBagConstraints.HORIZONTAL;
+        JTextField title = new JTextField(g.getTitle(), 20);
+        JTextArea desc = new JTextArea(g.getDescription() != null ? g.getDescription() : "", 3, 20);
+        JTextField dateField = new JTextField(g.getTargetDate().toString());
+        JComboBox<String> statusCombo = new JComboBox<>(new String[]{"Pending", "In Progress", "Completed"});
+        statusCombo.setSelectedItem(g.getStatus());
+        int y=0;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Title:"), gbc); gbc.gridx=1; d.add(title, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Description:"), gbc); gbc.gridx=1; d.add(new JScrollPane(desc), gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Target Date:"), gbc); gbc.gridx=1; d.add(dateField, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Status:"), gbc); gbc.gridx=1; d.add(statusCombo, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; gbc.gridwidth=2;
+        JButton save = new JButton("Update Goal");
+        save.addActionListener(ev -> {
+            try {
+                g.setTitle(title.getText().trim());
+                g.setDescription(desc.getText().trim());
+                g.setTargetDate(LocalDate.parse(dateField.getText().trim()));
+                g.setStatus((String)statusCombo.getSelectedItem());
+                new GoalDAO().update(g);
+                FileLogger.logInfo("Goal", "Updated goal #" + g.getGoalId());
+                JOptionPane.showMessageDialog(d, "Goal updated!");
+                d.dispose(); loadGoalsAsync();
+            } catch (Exception ex) { JOptionPane.showMessageDialog(d, "Failed: " + ex.getMessage()); }
+        });
+        d.add(save, gbc);
+        d.pack(); d.setLocationRelativeTo(this); d.setVisible(true);
+    }
+
+    private void editSelectedFeedback() {
+        int row = feedbackModel.getRowCount();
+        if (row == 0) { JOptionPane.showMessageDialog(this, "No feedback to edit"); return; }
+        String input = JOptionPane.showInputDialog(this, "Enter Feedback ID to edit:");
+        if (input == null || input.trim().isEmpty()) return;
+        try {
+            int id = Integer.parseInt(input.trim());
+            Feedback f = new FeedbackDAO().getById(id);
+            if (f == null) { JOptionPane.showMessageDialog(this, "Not found"); return; }
+            showEditFeedbackDialog(f);
+        } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage()); }
+    }
+
+    private void showEditFeedbackDialog(Feedback f) {
+        JDialog d = new JDialog(this, "Edit Feedback #" + f.getFeedbackId(), true);
+        d.setLayout(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5,5,5,5); gbc.fill = GridBagConstraints.HORIZONTAL;
+        JComboBox<Integer> rating = new JComboBox<>(new Integer[]{1,2,3,4,5});
+        rating.setSelectedItem(f.getRating());
+        JTextArea comments = new JTextArea(f.getComments() != null ? f.getComments() : "", 3, 20);
+        int y=0;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Rating (1-5):"), gbc); gbc.gridx=1; d.add(rating, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Comments:"), gbc); gbc.gridx=1; d.add(new JScrollPane(comments), gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; gbc.gridwidth=2;
+        JButton save = new JButton("Update Feedback");
+        save.addActionListener(ev -> {
+            try {
+                int r = (int) rating.getSelectedItem();
+                util.Validator.validateRating(r);
+                if (comments.getText().trim().isEmpty()) { JOptionPane.showMessageDialog(d, "Enter comments"); return; }
+                f.setRating(r);
+                f.setComments(comments.getText().trim());
+                new FeedbackDAO().update(f);
+                FileLogger.logInfo("Feedback", "Updated feedback #" + f.getFeedbackId());
+                JOptionPane.showMessageDialog(d, "Feedback updated!");
+                d.dispose(); loadFeedbackAsync();
+            } catch (exception.InvalidRatingException ex) { JOptionPane.showMessageDialog(d, ex.getMessage()); }
+            catch (Exception ex) { JOptionPane.showMessageDialog(d, "Failed: " + ex.getMessage()); }
+        });
+        d.add(save, gbc);
+        d.pack(); d.setLocationRelativeTo(this); d.setVisible(true);
+    }
+
     private void deleteSelectedEvaluation() {
-        JTable table = null;
-        for (Component c : getContentPane().getComponents()) {
-            if (c instanceof JTabbedPane) {
-                JPanel p = (JPanel) ((JTabbedPane) c).getComponentAt(0);
-                for (Component cc : p.getComponents()) if (cc instanceof JScrollPane) table = (JTable) ((JScrollPane) cc).getViewport().getView();
-            }
-        }
-        // Simpler: get first tab's table via evalModel selected row
-        // Use evalModel directly with JOptionPane input
         String input = JOptionPane.showInputDialog(this, "Enter Eval ID to delete:");
         if (input == null || input.trim().isEmpty()) return;
         try {

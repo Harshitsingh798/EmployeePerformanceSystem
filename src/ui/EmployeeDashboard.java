@@ -100,9 +100,13 @@ public class EmployeeDashboard extends JFrame {
         addBtn.addActionListener(e -> showAddPersonalGoalDialog());
         JButton completeBtn = new JButton("Mark Complete");
         completeBtn.addActionListener(e -> markGoalComplete());
+        JButton editBtn = new JButton("Edit Goal");
+        editBtn.addActionListener(e -> editSelectedGoal());
+        JButton deleteBtn = new JButton("Delete Goal");
+        deleteBtn.addActionListener(e -> deleteSelectedGoal());
         JButton refresh = new JButton("Refresh");
         refresh.addActionListener(e -> loadGoalsAsync());
-        btnPanel.add(addBtn); btnPanel.add(completeBtn); btnPanel.add(refresh);
+        btnPanel.add(addBtn); btnPanel.add(completeBtn); btnPanel.add(editBtn); btnPanel.add(deleteBtn); btnPanel.add(refresh);
         p.add(btnPanel, BorderLayout.SOUTH);
         return p;
     }
@@ -247,6 +251,62 @@ public class EmployeeDashboard extends JFrame {
                 loadGoalsAsync();
             } else JOptionPane.showMessageDialog(this, "Goal not found or not yours.");
         } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Failed: " + ex.getMessage()); }
+    }
+
+    private void editSelectedGoal() {
+        String input = JOptionPane.showInputDialog(this, "Enter Goal ID to edit:");
+        if (input == null || input.trim().isEmpty()) return;
+        try {
+            int id = Integer.parseInt(input.trim());
+            Goal g = new GoalDAO().getById(id);
+            if (g == null) { JOptionPane.showMessageDialog(this, "Not found"); return; }
+            showEditGoalDialog(g);
+        } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage()); }
+    }
+
+    private void showEditGoalDialog(Goal g) {
+        JDialog d = new JDialog(this, "Edit Goal #" + g.getGoalId(), true);
+        d.setLayout(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5,5,5,5); gbc.fill = GridBagConstraints.HORIZONTAL;
+        JTextField title = new JTextField(g.getTitle(), 20);
+        JTextArea desc = new JTextArea(g.getDescription() != null ? g.getDescription() : "", 3, 20);
+        JTextField dateField = new JTextField(g.getTargetDate().toString());
+        JComboBox<String> statusCombo = new JComboBox<>(new String[]{"Pending", "In Progress", "Completed"});
+        statusCombo.setSelectedItem(g.getStatus());
+        int y=0;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Title:"), gbc); gbc.gridx=1; d.add(title, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Description:"), gbc); gbc.gridx=1; d.add(new JScrollPane(desc), gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Target Date:"), gbc); gbc.gridx=1; d.add(dateField, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Status:"), gbc); gbc.gridx=1; d.add(statusCombo, gbc); y++;
+        gbc.gridx=0; gbc.gridy=y; gbc.gridwidth=2;
+        JButton save = new JButton("Update Goal");
+        save.addActionListener(ev -> {
+            try {
+                g.setTitle(title.getText().trim());
+                g.setDescription(desc.getText().trim());
+                g.setTargetDate(LocalDate.parse(dateField.getText().trim()));
+                g.setStatus((String)statusCombo.getSelectedItem());
+                new GoalDAO().update(g);
+                FileLogger.logInfo("Goal", "Updated goal #" + g.getGoalId());
+                JOptionPane.showMessageDialog(d, "Goal updated!");
+                d.dispose(); loadGoalsAsync();
+            } catch (Exception ex) { JOptionPane.showMessageDialog(d, "Failed: " + ex.getMessage()); }
+        });
+        d.add(save, gbc);
+        d.pack(); d.setLocationRelativeTo(this); d.setVisible(true);
+    }
+
+    private void deleteSelectedGoal() {
+        String input = JOptionPane.showInputDialog(this, "Enter Goal ID to delete:");
+        if (input == null || input.trim().isEmpty()) return;
+        try {
+            int id = Integer.parseInt(input.trim());
+            if (new GoalDAO().delete(id)) {
+                JOptionPane.showMessageDialog(this, "Deleted Goal #" + id);
+                loadGoalsAsync();
+            } else JOptionPane.showMessageDialog(this, "Not found");
+        } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Delete failed: " + ex.getMessage()); }
     }
 
     private void exportMyReport() {

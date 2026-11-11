@@ -90,5 +90,26 @@ lib/                         # JAR dependencies
 ER: `users (MANAGER/EMPLOYEE) 1:N evaluations, goals, feedback | teams M:N users`
 See `db/schema.sql` for full schema.
 
+## Review 2 Features (FINAL)
+### UI/UX Enhancements
+- **FlatLaf Theme:** Modern, professional UI look (replaces default Swing L&F)
+- **JFreeChart Integration:** Real bar/pie/line charts rendered from live database data
+- **Colored Buttons:** Add (Blue), Edit (Orange), Refresh (Green), Delete (Red) with styled appearance
+
+### Complete CRUD Operations
+- **Evaluations:** Add, Edit, Delete, Search (real-time filtering by employee name/comments)
+- **Goals:** Add, Edit, Delete, Mark Complete, Update Status
+- **Feedback:** Add, Edit, Delete with rating validation (1-5)
+- **Team Management:** Add member to team, Assign role, View all team members
+
+### Security & Performance
+- **SHA-256 Password Hashing:** Secure password storage with migration script (`db/migration_v2.sql`)
+- **SwingWorker Multithreading:** Non-blocking UI during database operations
+- **PreparedStatement:** SQL injection protection in all DAO classes
+
+### File I/O & Export
+- **CSV Export:** Export team reports and personal evaluations to CSV files
+- **FileLogger:** Synchronized logging to `app.log` for audit trail
+
 ## License
 Academic project for GUVI Hackathon Review 2.
