@@ -1,7 +1,37 @@
+# Build output
 bin/
+target/
+out/
 *.class
+*.jar
+
+# ...except the dependency jars in lib/, which are committed so that the
+# project runs without Maven. run-tests.bat needs the JUnit launcher.
+!lib/*.jar
+
+!.mvn/wrapper/maven-wrapper.jar
+
+# Local database credentials - never commit these.
+# Use db.properties.example as the template.
+db.properties
+src/db.properties
+
+# Logs
 *.log
 app.log
+
+# Exported reports
+*.csv
 my_evaluations_*.csv
 team_report.csv
+
+# Editor and tooling directories
 .Catched/
+.kilo/
+.tmpwork/
+.vscode/*
+!.vscode/settings.json
+
+# OS noise
+.DS_Store
+Thumbs.db

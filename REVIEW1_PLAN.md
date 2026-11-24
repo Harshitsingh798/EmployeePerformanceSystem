@@ -1,6 +1,14 @@
 # Employee Performance Evaluation System - Review 1 Project Plan
 **Deadline: October 10, 2026 | Stack: Core Java (Java SE) + Swing GUI + JDBC**
 
+> **Status: historical.** This is the plan written for Review 1 and is kept for
+> reference. Several points in it are out of date — the passwords are now
+> PBKDF2-hashed rather than SHA-256, the project now has a 66-test suite and a
+> Maven build, and the connection handling is pooled. For the current state of
+> the project see [README.md](README.md),
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+> [docs/AUDIT_REPORT.md](docs/AUDIT_REPORT.md).
+
 ---
 
 ## 1. Core Theme & Requirement Analysis (from Images)

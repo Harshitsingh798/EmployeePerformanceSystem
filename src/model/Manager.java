@@ -23,8 +23,8 @@ public class Manager extends User {
     }
 
     @Override
-    public void displayInfo() {
-        System.out.println("Manager: " + name + " | Dept: " + department);
+    public String describe() {
+        return "Manager " + name + " (" + department + ")";
     }
 
     public String getDepartment() { return department; }

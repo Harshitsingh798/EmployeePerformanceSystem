@@ -1,32 +1,34 @@
 package util;
 
-import javax.swing.ImageIcon;
+import javax.swing.AbstractButton;
 import java.awt.Color;
 import java.awt.Font;
 
-public class Icons {
-    public static ImageIcon getIcon(String name, int size) {
-        try {
-            java.net.URL url = Icons.class.getResource("/icons/" + name + ".png");
-            if (url != null) {
-                ImageIcon icon = new ImageIcon(url);
-                if (size > 0) {
-                    java.awt.Image img = icon.getImage().getScaledInstance(size, size, java.awt.Image.SCALE_SMOOTH);
-                    return new ImageIcon(img);
-                }
-                return icon;
-            }
-        } catch (Exception e) {
-            // Fallback to text
-        }
-        return null;
+/**
+ * Small helpers for styling Swing components.
+ */
+public final class Icons {
+
+    /** Font family used throughout the application. */
+    private static final String FONT_FAMILY = "Segoe UI";
+
+    private Icons() {
+        // Utility class - not instantiable.
     }
 
-    public static void styleButton(javax.swing.AbstractButton btn, String text, Color bg, Color fg) {
-        btn.setText(text);
-        btn.setBackground(bg);
-        btn.setForeground(fg);
-        btn.setFocusPainted(false);
-        btn.setFont(new Font("Segoe UI", Font.BOLD, 12));
+    /**
+     * Applies a consistent look to an action button.
+     *
+     * @param button    the button to style
+     * @param text      the label to set
+     * @param background the button's background colour
+     * @param foreground the label colour
+     */
+    public static void styleButton(AbstractButton button, String text, Color background, Color foreground) {
+        button.setText(text);
+        button.setBackground(background);
+        button.setForeground(foreground);
+        button.setFocusPainted(false);
+        button.setFont(new Font(FONT_FAMILY, Font.BOLD, 12));
     }
 }

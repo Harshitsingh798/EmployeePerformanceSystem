@@ -27,8 +27,8 @@ public class Employee extends User {
     }
 
     @Override
-    public void displayInfo() {
-        System.out.println("Employee: " + name + " | Dept: " + department + " | Designation: " + designation);
+    public String describe() {
+        return "Employee " + name + " (" + department + ", " + designation + ")";
     }
 
     public String getDepartment() { return department; }

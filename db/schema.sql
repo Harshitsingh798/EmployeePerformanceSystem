@@ -5,11 +5,13 @@ CREATE DATABASE IF NOT EXISTS employee_performance_db;
 USE employee_performance_db;
 
 -- Users table (both Manager & Employee)
+-- The password column holds a PBKDF2-HMAC-SHA256 hash in the format
+-- pbkdf2$<iterations>$<saltBase64>$<hashBase64>, which needs 255 characters.
 CREATE TABLE IF NOT EXISTS users (
     user_id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(100) NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
-    password VARCHAR(100) NOT NULL,
+    password VARCHAR(255) NOT NULL,
     role ENUM('MANAGER','EMPLOYEE') NOT NULL,
     department VARCHAR(100),
     designation VARCHAR(100),
@@ -19,14 +21,16 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- Evaluations table
+-- overall_score is written by the application from the four criteria, so it
+-- can never disagree with them.
 CREATE TABLE IF NOT EXISTS evaluations (
     eval_id INT PRIMARY KEY AUTO_INCREMENT,
     employee_id INT NOT NULL,
     manager_id INT NOT NULL,
-    communication INT CHECK (communication BETWEEN 1 AND 5),
-    technical INT CHECK (technical BETWEEN 1 AND 5),
-    punctuality INT CHECK (punctuality BETWEEN 1 AND 5),
-    teamwork INT CHECK (teamwork BETWEEN 1 AND 5),
+    communication INT NOT NULL CHECK (communication BETWEEN 1 AND 5),
+    technical INT NOT NULL CHECK (technical BETWEEN 1 AND 5),
+    punctuality INT NOT NULL CHECK (punctuality BETWEEN 1 AND 5),
+    teamwork INT NOT NULL CHECK (teamwork BETWEEN 1 AND 5),
     overall_score DOUBLE,
     comments TEXT,
     eval_date DATE DEFAULT (CURRENT_DATE),
@@ -56,7 +60,7 @@ CREATE TABLE IF NOT EXISTS feedback (
     manager_id INT NOT NULL,
     eval_id INT,
     comments TEXT NOT NULL,
-    rating INT CHECK (rating BETWEEN 1 AND 5),
+    rating INT NOT NULL CHECK (rating BETWEEN 1 AND 5),
     given_on DATE DEFAULT (CURRENT_DATE),
     FOREIGN KEY (employee_id) REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (manager_id) REFERENCES users(user_id) ON DELETE CASCADE,

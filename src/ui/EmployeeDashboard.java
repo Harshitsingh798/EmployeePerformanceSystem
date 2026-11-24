@@ -3,37 +3,110 @@ package ui;
 import dao.EvaluationDAO;
 import dao.FeedbackDAO;
 import dao.GoalDAO;
+import exception.GoalDeadlineException;
 import model.Evaluation;
 import model.Feedback;
 import model.Goal;
 import util.FileLogger;
 import util.ReportExporter;
+import util.Validator;
 import ui.components.ChartPanel;
 
-import javax.swing.*;
+import javax.swing.BorderFactory;
+import javax.swing.JButton;
+import javax.swing.JComboBox;
+import javax.swing.JDialog;
+import javax.swing.JFileChooser;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTabbedPane;
+import javax.swing.JTable;
+import javax.swing.JTextArea;
+import javax.swing.JTextField;
+import javax.swing.SwingConstants;
+import javax.swing.SwingWorker;
 import javax.swing.table.DefaultTableModel;
-import java.awt.*;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.GridLayout;
+import java.awt.Insets;
+import java.sql.SQLException;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
 
 /**
- * Employee Dashboard - 4 tabs wired to real DB
+ * The employee's workspace.
+ *
+ * <p>Four tabs - performance tracking, feedback history, personal goals and
+ * performance reports - all backed by the live database.
+ *
+ * <p>The employee only ever sees their own rows: every query is filtered by
+ * the signed-in employee's id, and every write is re-checked against that id
+ * in the database so that guessing an id cannot reach another employee's data.
  */
-public class EmployeeDashboard extends JFrame {
+public final class EmployeeDashboard extends JFrame {
+
+    /** Serialisation version - required for a {@link java.io.Serializable} subclass. */
+    private static final long serialVersionUID = 1L;
 
     private final String employeeName;
     private final int employeeId;
-    private DefaultTableModel trackingModel, feedbackModel, goalsModel;
-    private JLabel avgLabel;
-    private JPanel lineSlot, pieSlot;
 
+    private final DefaultTableModel trackingModel;
+    private final DefaultTableModel feedbackModel;
+    private final DefaultTableModel goalsModel;
+    private final JTable trackingTable;
+    private final JTable feedbackTable;
+    private final JTable goalsTable;
+
+    private final JLabel averageLabel = new JLabel("Average Score: loading...", SwingConstants.CENTER);
+
+    /** Holds the score trend chart on the tracking tab. */
+    private final JPanel trackingChartSlot = new JPanel(new BorderLayout());
+
+    /** Holds the criteria pie chart on the reports tab. */
+    private final JPanel reportsPieSlot = new JPanel(new BorderLayout());
+
+    /** Holds the criteria bar chart on the reports tab. */
+    private final JPanel reportsBarSlot = new JPanel(new BorderLayout());
+
+    /** Holds the goal status pie chart on the goals tab. */
+    private final JPanel goalStatusSlot = new JPanel(new BorderLayout());
+
+    /**
+     * Builds the dashboard.
+     *
+     * @param employeeName the name shown in the header
+     * @param employeeId   the signed-in employee's user id
+     */
     public EmployeeDashboard(String employeeName, int employeeId) {
         this.employeeName = employeeName;
         this.employeeId = employeeId;
+
         setTitle("Employee Dashboard - " + employeeName + " (ID: " + employeeId + ") | Performetrics");
-        setSize(1050, 650);
+        setSize(1080, 680);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
+
+        trackingModel = readOnlyModel("Eval ID", "Date", "Comm", "Tech", "Punct", "Team", "Score", "Comments");
+        feedbackModel = readOnlyModel("Feedback ID", "Manager ID", "Rating", "Comments", "Date");
+        goalsModel = readOnlyModel("Goal ID", "Title", "Type", "Target Date", "Status");
+
+        trackingTable = new JTable(trackingModel);
+        feedbackTable = new JTable(feedbackModel);
+        goalsTable = new JTable(goalsModel);
 
         JPanel top = new JPanel(new BorderLayout());
         top.setBackground(new Color(0, 105, 92));
@@ -42,7 +115,10 @@ public class EmployeeDashboard extends JFrame {
         welcome.setFont(new Font("Segoe UI", Font.BOLD, 15));
         top.add(welcome, BorderLayout.WEST);
         JButton logout = new JButton("Logout");
-        logout.addActionListener(e -> { dispose(); new LoginFrame().setVisible(true); });
+        logout.addActionListener(event -> {
+            dispose();
+            new LoginFrame().setVisible(true);
+        });
         top.add(logout, BorderLayout.EAST);
         add(top, BorderLayout.NORTH);
 
@@ -61,269 +137,601 @@ public class EmployeeDashboard extends JFrame {
         loadAllAsync(status);
     }
 
-    public EmployeeDashboard(String employeeEmail) { this(employeeEmail, 2); }
+    // ------------------------------------------------------------------ panels
 
+    /**
+     * Builds the performance tracking tab: summary, trend chart and table.
+     */
     private JPanel createTrackingPanel() {
-        JPanel p = new JPanel(new BorderLayout());
-        avgLabel = new JLabel("Average Score: loading...", SwingConstants.CENTER);
-        avgLabel.setFont(new Font("Segoe UI", Font.BOLD, 13));
-        p.add(avgLabel, BorderLayout.NORTH);
-        lineSlot = new JPanel(new BorderLayout());
-        lineSlot.setBorder(BorderFactory.createTitledBorder("Your Score Trend (Line Chart)"));
-        p.add(lineSlot, BorderLayout.CENTER);
-        String[] cols = {"Eval ID", "Date", "Comm", "Tech", "Punct", "Team", "Score", "Comments"};
-        trackingModel = new DefaultTableModel(cols, 0) { public boolean isCellEditable(int r, int c) { return false; } };
-        p.add(new JScrollPane(new JTable(trackingModel)), BorderLayout.SOUTH);
-        return p;
+        JPanel panel = new JPanel(new BorderLayout());
+        averageLabel.setFont(new Font("Segoe UI", Font.BOLD, 13));
+        panel.add(averageLabel, BorderLayout.NORTH);
+
+        trackingChartSlot.setBorder(BorderFactory.createTitledBorder("Your Score Trend (Line Chart)"));
+        panel.add(trackingChartSlot, BorderLayout.CENTER);
+
+        // Cap the height of the history table, so the chart above it gets
+        // enough room to actually show the trend.
+        JScrollPane history = new JScrollPane(trackingTable);
+        history.setPreferredSize(new Dimension(0, 190));
+        panel.add(history, BorderLayout.SOUTH);
+        return panel;
     }
 
+    /**
+     * Builds the feedback history tab.
+     */
     private JPanel createFeedbackPanel() {
-        JPanel p = new JPanel(new BorderLayout());
-        p.add(new JLabel("  Feedback Received from Managers", SwingConstants.LEFT), BorderLayout.NORTH);
-        String[] cols = {"Feedback ID", "Manager ID", "Rating", "Comments", "Date"};
-        feedbackModel = new DefaultTableModel(cols, 0) { public boolean isCellEditable(int r, int c) { return false; } };
-        p.add(new JScrollPane(new JTable(feedbackModel)), BorderLayout.CENTER);
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.add(new JLabel("  Feedback Received from Managers", SwingConstants.LEFT), BorderLayout.NORTH);
+        panel.add(new JScrollPane(feedbackTable), BorderLayout.CENTER);
         JButton refresh = new JButton("Refresh");
-        refresh.addActionListener(e -> loadFeedbackAsync());
-        JPanel south = new JPanel(); south.add(refresh);
-        p.add(south, BorderLayout.SOUTH);
-        return p;
+        refresh.addActionListener(event -> loadFeedbackAsync());
+        JPanel south = new JPanel();
+        south.add(refresh);
+        panel.add(south, BorderLayout.SOUTH);
+        return panel;
     }
 
+    /**
+     * Builds the personal goals tab: table plus a status pie chart.
+     */
     private JPanel createGoalsPanel() {
-        JPanel p = new JPanel(new BorderLayout());
-        String[] cols = {"Goal ID", "Title", "Target Date", "Status", "Personal?"};
-        goalsModel = new DefaultTableModel(cols, 0) { public boolean isCellEditable(int r, int c) { return false; } };
-        p.add(new JScrollPane(new JTable(goalsModel)), BorderLayout.CENTER);
-        JPanel btnPanel = new JPanel();
-        JButton addBtn = new JButton("Set Personal Goal");
-        addBtn.addActionListener(e -> showAddPersonalGoalDialog());
-        JButton completeBtn = new JButton("Mark Complete");
-        completeBtn.addActionListener(e -> markGoalComplete());
-        JButton editBtn = new JButton("Edit Goal");
-        editBtn.addActionListener(e -> editSelectedGoal());
-        JButton deleteBtn = new JButton("Delete Goal");
-        deleteBtn.addActionListener(e -> deleteSelectedGoal());
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.add(new JScrollPane(goalsTable), BorderLayout.CENTER);
+
+        goalStatusSlot.setBorder(BorderFactory.createTitledBorder("Goal Status Distribution"));
+        panel.add(goalStatusSlot, BorderLayout.EAST);
+
+        JButton add = new JButton("Set Personal Goal");
+        JButton complete = new JButton("Mark Complete");
+        JButton edit = new JButton("Edit Selected");
+        JButton delete = new JButton("Delete Selected");
         JButton refresh = new JButton("Refresh");
-        refresh.addActionListener(e -> loadGoalsAsync());
-        btnPanel.add(addBtn); btnPanel.add(completeBtn); btnPanel.add(editBtn); btnPanel.add(deleteBtn); btnPanel.add(refresh);
-        p.add(btnPanel, BorderLayout.SOUTH);
-        return p;
+        add.addActionListener(event -> showAddPersonalGoalDialog());
+        complete.addActionListener(event -> markGoalComplete());
+        edit.addActionListener(event -> editSelectedGoal());
+        delete.addActionListener(event -> deleteSelectedGoal());
+        refresh.addActionListener(event -> loadGoalsAsync());
+
+        JPanel buttons = new JPanel();
+        buttons.add(add);
+        buttons.add(complete);
+        buttons.add(edit);
+        buttons.add(delete);
+        buttons.add(refresh);
+        panel.add(buttons, BorderLayout.SOUTH);
+        return panel;
     }
 
+    /**
+     * Builds the performance reports tab with the two criteria charts.
+     */
     private JPanel createReportsPanel() {
-        JPanel p = new JPanel(new GridLayout(1, 2, 10, 10));
-        p.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        lineSlot = new JPanel(new BorderLayout());
-        lineSlot.setBorder(BorderFactory.createTitledBorder("Your Score Trend (Line)"));
-        pieSlot = new JPanel(new BorderLayout());
-        pieSlot.setBorder(BorderFactory.createTitledBorder("Criteria Breakdown (Pie)"));
-        p.add(lineSlot); p.add(pieSlot);
-        JButton export = new JButton("Export My Evaluations to CSV (File I/O)");
-        export.addActionListener(e -> exportMyReport());
-        JPanel wrap = new JPanel(new BorderLayout());
-        wrap.add(p, BorderLayout.CENTER);
-        JPanel south = new JPanel(); south.add(export);
-        wrap.add(south, BorderLayout.SOUTH);
-        return wrap;
+        JPanel charts = new JPanel(new GridLayout(1, 2, 10, 10));
+        charts.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        reportsBarSlot.setBorder(BorderFactory.createTitledBorder("Your Criteria Averages (Bar)"));
+        reportsPieSlot.setBorder(BorderFactory.createTitledBorder("Criteria Breakdown (Pie)"));
+        charts.add(reportsBarSlot);
+        charts.add(reportsPieSlot);
+
+        JButton export = new JButton("Export My Evaluations to CSV");
+        export.addActionListener(event -> exportMyReport());
+
+        JPanel wrapper = new JPanel(new BorderLayout());
+        wrapper.add(charts, BorderLayout.CENTER);
+        JPanel south = new JPanel();
+        south.add(export);
+        wrapper.add(south, BorderLayout.SOUTH);
+        return wrapper;
     }
 
+    // ------------------------------------------------------------- async loading
+
+    /**
+     * Starts every background load.
+     *
+     * @param status the label that shows the load result
+     */
     private void loadAllAsync(JLabel status) {
         loadTrackingAsync();
         loadFeedbackAsync();
         loadGoalsAsync();
         new SwingWorker<String, Void>() {
+            @Override
             protected String doInBackground() throws Exception {
-                EvaluationDAO dao = new EvaluationDAO();
-                List<Evaluation> evals = dao.getByEmployeeId(employeeId);
-                if (evals.isEmpty()) return "No evaluations yet.";
-                double avg = evals.stream().mapToDouble(Evaluation::getOverallScore).average().orElse(0);
-                int cAvg = (int) evals.stream().mapToInt(Evaluation::getCommunication).average().orElse(0);
-                int tAvg = (int) evals.stream().mapToInt(Evaluation::getTechnical).average().orElse(0);
-                return String.format("Avg: %.2f | Comm: %d | Tech: %d | Total evals: %d", avg, cAvg, tAvg, evals.size());
+                List<Evaluation> evaluations = new EvaluationDAO().getByEmployeeId(employeeId);
+                if (evaluations.isEmpty()) {
+                    return "No evaluations yet.";
+                }
+                double average = evaluations.stream().mapToDouble(Evaluation::calculateScore).average().orElse(0);
+                int communication = (int) evaluations.stream().mapToInt(Evaluation::getCommunication).average().orElse(0);
+                int technical = (int) evaluations.stream().mapToInt(Evaluation::getTechnical).average().orElse(0);
+                return String.format(Locale.ROOT, "Avg: %.2f | Comm: %d | Tech: %d | Total evals: %d",
+                        average, communication, technical, evaluations.size());
             }
+
+            @Override
             protected void done() {
-                try { status.setText("  " + get()); } catch (Exception ex) { status.setText("  Load error: " + ex.getMessage()); }
+                try {
+                    status.setText("  " + get());
+                } catch (ExecutionException e) {
+                    Exception error = unwrap(e);
+                    status.setText("  Load error: " + error.getMessage());
+                    FileLogger.logError("Employee summary load failed", error);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    status.setText("  Load error: " + e.getMessage());
+                }
             }
         }.execute();
     }
 
+    /**
+     * Loads this employee's evaluations and refreshes the trend chart.
+     */
     private void loadTrackingAsync() {
         new SwingWorker<List<Evaluation>, Void>() {
-            protected List<Evaluation> doInBackground() throws Exception { return new EvaluationDAO().getByEmployeeId(employeeId); }
+            @Override
+            protected List<Evaluation> doInBackground() throws Exception {
+                return new EvaluationDAO().getByEmployeeId(employeeId);
+            }
+
+            @Override
             protected void done() {
                 try {
-                    List<Evaluation> list = get();
+                    List<Evaluation> evaluations = get();
                     trackingModel.setRowCount(0);
-                    for (Evaluation e : list) {
-                        trackingModel.addRow(new Object[]{e.getEvalId(), e.getEvalDate(), e.getCommunication(), e.getTechnical(), e.getPunctuality(), e.getTeamwork(), String.format("%.2f", e.getOverallScore()), e.getComments()});
+                    for (Evaluation evaluation : evaluations) {
+                        trackingModel.addRow(new Object[]{
+                                evaluation.getEvalId(),
+                                evaluation.getEvalDate(),
+                                evaluation.getCommunication(),
+                                evaluation.getTechnical(),
+                                evaluation.getPunctuality(),
+                                evaluation.getTeamwork(),
+                                String.format(Locale.ROOT, "%.2f", evaluation.calculateScore()),
+                                evaluation.getComments()});
                     }
-                    if (!list.isEmpty()) {
-                        double avg = list.stream().mapToDouble(Evaluation::getOverallScore).average().orElse(0);
-                        avgLabel.setText(String.format("Average Score: %.2f / 5.0  (%d evaluations)", avg, list.size()));
-                        java.util.List<LocalDate> dates = new java.util.ArrayList<>();
-                        java.util.List<Double> scores = new java.util.ArrayList<>();
-                        for (Evaluation e : list) { dates.add(e.getEvalDate()); scores.add(e.getOverallScore()); }
-                        lineSlot.removeAll();
-                        lineSlot.add(ChartPanel.line("Your Score Over Time", dates, scores), BorderLayout.CENTER);
-                        lineSlot.revalidate(); lineSlot.repaint();
+                    trackingChartSlot.removeAll();
+                    if (evaluations.isEmpty()) {
+                        averageLabel.setText("No evaluations yet for you.");
+                        trackingChartSlot.add(new JLabel("No data - ask your manager for an evaluation.",
+                                SwingConstants.CENTER));
                     } else {
-                        avgLabel.setText("No evaluations yet for you.");
-                        lineSlot.removeAll();
-                        lineSlot.add(new JLabel("No data - ask your manager for an evaluation.", SwingConstants.CENTER));
-                        lineSlot.revalidate();
+                        double average = evaluations.stream().mapToDouble(Evaluation::calculateScore).average().orElse(0);
+                        averageLabel.setText(String.format(Locale.ROOT,
+                                "Average Score: %.2f / 5.0  (%d evaluations)", average, evaluations.size()));
+                        List<LocalDate> dates = new ArrayList<>();
+                        List<Double> scores = new ArrayList<>();
+                        for (Evaluation evaluation : evaluations) {
+                            dates.add(evaluation.getEvalDate());
+                            scores.add(evaluation.calculateScore());
+                        }
+                        trackingChartSlot.add(ChartPanel.line("Your Score Over Time", dates, scores),
+                                BorderLayout.CENTER);
                     }
-                } catch (Exception ex) { avgLabel.setText("Load failed: " + ex.getMessage()); }
+                    trackingChartSlot.revalidate();
+                    trackingChartSlot.repaint();
+                } catch (ExecutionException e) {
+                    Exception error = unwrap(e);
+                    averageLabel.setText("Load failed: " + error.getMessage());
+                    FileLogger.logError("Tracking load failed", error);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    averageLabel.setText("Load failed: " + e.getMessage());
+                }
             }
         }.execute();
     }
 
+    /**
+     * Loads the feedback addressed to this employee.
+     */
     private void loadFeedbackAsync() {
         new SwingWorker<List<Feedback>, Void>() {
-            protected List<Feedback> doInBackground() throws Exception { return new FeedbackDAO().getByEmployee(employeeId); }
+            @Override
+            protected List<Feedback> doInBackground() throws Exception {
+                return new FeedbackDAO().getByEmployee(employeeId);
+            }
+
+            @Override
             protected void done() {
                 try {
+                    List<Feedback> feedbackList = get();
                     feedbackModel.setRowCount(0);
-                    for (Feedback f : get()) feedbackModel.addRow(new Object[]{f.getFeedbackId(), f.getManagerId(), f.getRating(), f.getComments(), f.getGivenOn()});
-                } catch (Exception ex) {}
+                    for (Feedback feedback : feedbackList) {
+                        feedbackModel.addRow(new Object[]{
+                                feedback.getFeedbackId(),
+                                feedback.getManagerId(),
+                                feedback.getRating(),
+                                feedback.getComments(),
+                                feedback.getGivenOn()});
+                    }
+                } catch (ExecutionException e) {
+                    FileLogger.logError("Feedback load failed", unwrap(e));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    FileLogger.logError("Feedback load failed", e);
+                }
             }
         }.execute();
     }
 
+    /**
+     * Loads this employee's goals and refreshes the status pie chart.
+     */
     private void loadGoalsAsync() {
         new SwingWorker<List<Goal>, Void>() {
-            protected List<Goal> doInBackground() throws Exception { return new GoalDAO().getByEmployee(employeeId); }
+            @Override
+            protected List<Goal> doInBackground() throws Exception {
+                return new GoalDAO().getByEmployee(employeeId);
+            }
+
+            @Override
             protected void done() {
                 try {
+                    List<Goal> goals = get();
                     goalsModel.setRowCount(0);
-                    for (Goal g : get()) goalsModel.addRow(new Object[]{g.getGoalId(), g.getTitle(), g.getTargetDate(), g.getStatus(), g.isPersonal() ? "Yes" : "No"});
-                    // Pie chart: goals by status
-                    java.util.Map<String, Integer> statusCount = new java.util.HashMap<>();
-                    for (Goal g : get()) statusCount.merge(g.getStatus(), 1, Integer::sum);
-                    java.util.Map<String, Double> pieData = new java.util.LinkedHashMap<>();
-                    for (var e : statusCount.entrySet()) pieData.put(e.getKey(), (double) e.getValue());
-                    pieSlot.removeAll();
-                    pieSlot.add(ChartPanel.pie("Goal Status Distribution", pieData), BorderLayout.CENTER);
-                    pieSlot.revalidate(); pieSlot.repaint();
-                } catch (Exception ex) {}
+                    for (Goal goal : goals) {
+                        goalsModel.addRow(new Object[]{
+                                goal.getGoalId(),
+                                goal.getTitle(),
+                                goal.isPersonal() ? "Personal" : "From Manager",
+                                goal.getTargetDate(),
+                                goal.getStatus()});
+                    }
+                    Map<String, Integer> statusCount = new LinkedHashMap<>();
+                    for (Goal goal : goals) {
+                        statusCount.merge(goal.getStatus(), 1, Integer::sum);
+                    }
+                    Map<String, Double> pieData = new LinkedHashMap<>();
+                    for (Map.Entry<String, Integer> entry : statusCount.entrySet()) {
+                        pieData.put(entry.getKey(), entry.getValue().doubleValue());
+                    }
+                    goalStatusSlot.removeAll();
+                    goalStatusSlot.add(ChartPanel.pie("Goal Status Distribution", pieData), BorderLayout.CENTER);
+                    goalStatusSlot.revalidate();
+                    goalStatusSlot.repaint();
+                    loadReportAsync();
+                } catch (ExecutionException e) {
+                    FileLogger.logError("Goal load failed", unwrap(e));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    FileLogger.logError("Goal load failed", e);
+                }
             }
         }.execute();
     }
 
+    /**
+     * Loads the criteria charts for the reports tab.
+     */
+    private void loadReportAsync() {
+        new SwingWorker<Object[], Void>() {
+            @Override
+            protected Object[] doInBackground() throws Exception {
+                List<Evaluation> evaluations = new EvaluationDAO().getByEmployeeId(employeeId);
+                Map<String, Double> criteria = new LinkedHashMap<>();
+                if (!evaluations.isEmpty()) {
+                    criteria.put("Communication", evaluations.stream()
+                            .mapToInt(Evaluation::getCommunication).average().orElse(0));
+                    criteria.put("Technical", evaluations.stream()
+                            .mapToInt(Evaluation::getTechnical).average().orElse(0));
+                    criteria.put("Punctuality", evaluations.stream()
+                            .mapToInt(Evaluation::getPunctuality).average().orElse(0));
+                    criteria.put("Teamwork", evaluations.stream()
+                            .mapToInt(Evaluation::getTeamwork).average().orElse(0));
+                }
+                return new Object[]{criteria};
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    Object[] result = get();
+                    @SuppressWarnings("unchecked")
+                    Map<String, Double> criteria = (Map<String, Double>) result[0];
+                    reportsPieSlot.removeAll();
+                    reportsPieSlot.add(ChartPanel.pie("Criteria Breakdown", criteria), BorderLayout.CENTER);
+                    reportsBarSlot.removeAll();
+                    reportsBarSlot.add(ChartPanel.bar("Criteria Averages", "Rating", criteria), BorderLayout.CENTER);
+                    reportsPieSlot.revalidate();
+                    reportsPieSlot.repaint();
+                    reportsBarSlot.revalidate();
+                    reportsBarSlot.repaint();
+                } catch (ExecutionException e) {
+                    FileLogger.logError("Report load failed", unwrap(e));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    FileLogger.logError("Report load failed", e);
+                }
+            }
+        }.execute();
+    }
+
+    // ------------------------------------------------------------------ dialogs
+
+    /**
+     * Opens the dialog that creates a personal goal.
+     */
     private void showAddPersonalGoalDialog() {
-        JDialog d = new JDialog(this, "Set Personal Goal", true);
-        d.setLayout(new GridBagLayout());
+        JDialog dialog = new JDialog(this, "Set Personal Goal", true);
+        dialog.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5,5,5,5); gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+
         JTextField title = new JTextField(20);
-        JTextArea desc = new JTextArea(3, 20);
-        JTextField dateField = new JTextField(10); dateField.setText(LocalDate.now().plusDays(30).toString());
-        int y=0;
-        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Title:"), gbc); gbc.gridx=1; d.add(title, gbc); y++;
-        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Description:"), gbc); gbc.gridx=1; d.add(new JScrollPane(desc), gbc); y++;
-        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Target Date (YYYY-MM-DD):"), gbc); gbc.gridx=1; d.add(dateField, gbc); y++;
-        gbc.gridx=0; gbc.gridy=y; gbc.gridwidth=2;
+        JTextArea description = new JTextArea(3, 20);
+        JTextField dateField = new JTextField(10);
+        dateField.setText(LocalDate.now().plusDays(30).toString());
+
+        int y = 0;
+        gbc.gridx = 0;
+        gbc.gridy = y++;
+        dialog.add(new JLabel("Title:"), gbc);
+        gbc.gridx = 1;
+        dialog.add(title, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = y++;
+        dialog.add(new JLabel("Description:"), gbc);
+        gbc.gridx = 1;
+        dialog.add(new JScrollPane(description), gbc);
+        gbc.gridx = 0;
+        gbc.gridy = y++;
+        dialog.add(new JLabel("Target Date (YYYY-MM-DD):"), gbc);
+        gbc.gridx = 1;
+        dialog.add(dateField, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = y;
+
         JButton save = new JButton("Save Personal Goal");
-        save.addActionListener(e -> {
+        save.addActionListener(event -> {
             try {
-                if (title.getText().trim().isEmpty()) { JOptionPane.showMessageDialog(d, "Enter title"); return; }
+                Validator.requireText(title.getText(), "Title");
                 LocalDate target = LocalDate.parse(dateField.getText().trim());
-                util.Validator.validateGoalDeadline(target);
-                Goal g = new Goal(title.getText().trim(), desc.getText(), employeeId, employeeId, target, true);
-                new GoalDAO().add(g);
-                FileLogger.logInfo("PersonalGoal", employeeName + " set goal: " + g.getTitle());
-                JOptionPane.showMessageDialog(d, "Personal goal saved!");
-                d.dispose(); loadGoalsAsync();
-            } catch (exception.GoalDeadlineException ex) { JOptionPane.showMessageDialog(d, ex.getMessage()); }
-            catch (Exception ex) { JOptionPane.showMessageDialog(d, "Failed: " + ex.getMessage()); }
+                Validator.validateGoalDeadline(target);
+                Goal goal = new Goal(title.getText().trim(), description.getText().trim(),
+                        employeeId, employeeId, target, true);
+                new GoalDAO().add(goal);
+                FileLogger.logInfo("PersonalGoal", employeeName + " set goal: " + goal.getTitle());
+                JOptionPane.showMessageDialog(dialog, "Personal goal saved!");
+                dialog.dispose();
+                loadGoalsAsync();
+            } catch (GoalDeadlineException e) {
+                JOptionPane.showMessageDialog(dialog, e.getMessage());
+            } catch (IllegalArgumentException e) {
+                JOptionPane.showMessageDialog(dialog, e.getMessage());
+            } catch (java.time.format.DateTimeParseException e) {
+                JOptionPane.showMessageDialog(dialog, "Use the date format YYYY-MM-DD.");
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(dialog, "Failed: " + e.getMessage());
+                FileLogger.logError("Personal goal save failed", e);
+            }
         });
-        d.add(save, gbc);
-        d.pack(); d.setLocationRelativeTo(this); d.setVisible(true);
+        dialog.add(save, gbc);
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
     }
 
+    /**
+     * Marks the selected goal as completed.
+     */
     private void markGoalComplete() {
-        String input = JOptionPane.showInputDialog(this, "Enter Goal ID to mark Completed:");
-        if (input == null || input.trim().isEmpty()) return;
+        int row = goalsTable.getSelectedRow();
+        if (row < 0) {
+            JOptionPane.showMessageDialog(this, "Select a goal in the table first.");
+            return;
+        }
+        int id = (int) goalsModel.getValueAt(row, 0);
         try {
-            int id = Integer.parseInt(input.trim());
-            if (new GoalDAO().updateStatus(id, "Completed")) {
-                JOptionPane.showMessageDialog(this, "Goal #" + id + " marked Completed!");
+            if (new GoalDAO().updateStatus(id, Goal.STATUS_COMPLETED, employeeId)) {
+                JOptionPane.showMessageDialog(this, "Goal #" + id + " marked completed!");
                 loadGoalsAsync();
-            } else JOptionPane.showMessageDialog(this, "Goal not found or not yours.");
-        } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Failed: " + ex.getMessage()); }
+            } else {
+                JOptionPane.showMessageDialog(this, "Goal not found or not yours.");
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, "Failed: " + e.getMessage());
+            FileLogger.logError("Goal status update failed", e);
+        }
     }
 
+    /**
+     * Edits the selected goal.
+     */
     private void editSelectedGoal() {
-        String input = JOptionPane.showInputDialog(this, "Enter Goal ID to edit:");
-        if (input == null || input.trim().isEmpty()) return;
+        int row = goalsTable.getSelectedRow();
+        if (row < 0) {
+            JOptionPane.showMessageDialog(this, "Select a goal in the table first.");
+            return;
+        }
+        int id = (int) goalsModel.getValueAt(row, 0);
         try {
-            int id = Integer.parseInt(input.trim());
-            Goal g = new GoalDAO().getById(id);
-            if (g == null) { JOptionPane.showMessageDialog(this, "Not found"); return; }
-            showEditGoalDialog(g);
-        } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage()); }
+            Goal goal = new GoalDAO().getOwnedGoal(id, employeeId);
+            if (goal == null) {
+                JOptionPane.showMessageDialog(this, "That goal was not found or is not yours.");
+                return;
+            }
+            showEditGoalDialog(goal);
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, "Error: " + e.getMessage());
+        }
     }
 
-    private void showEditGoalDialog(Goal g) {
-        JDialog d = new JDialog(this, "Edit Goal #" + g.getGoalId(), true);
-        d.setLayout(new GridBagLayout());
+    /**
+     * Shows the edit dialog for one goal.
+     *
+     * @param goal the goal to edit
+     */
+    private void showEditGoalDialog(Goal goal) {
+        JDialog dialog = new JDialog(this, "Edit Goal #" + goal.getGoalId(), true);
+        dialog.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5,5,5,5); gbc.fill = GridBagConstraints.HORIZONTAL;
-        JTextField title = new JTextField(g.getTitle(), 20);
-        JTextArea desc = new JTextArea(g.getDescription() != null ? g.getDescription() : "", 3, 20);
-        JTextField dateField = new JTextField(g.getTargetDate().toString());
-        JComboBox<String> statusCombo = new JComboBox<>(new String[]{"Pending", "In Progress", "Completed"});
-        statusCombo.setSelectedItem(g.getStatus());
-        int y=0;
-        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Title:"), gbc); gbc.gridx=1; d.add(title, gbc); y++;
-        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Description:"), gbc); gbc.gridx=1; d.add(new JScrollPane(desc), gbc); y++;
-        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Target Date:"), gbc); gbc.gridx=1; d.add(dateField, gbc); y++;
-        gbc.gridx=0; gbc.gridy=y; d.add(new JLabel("Status:"), gbc); gbc.gridx=1; d.add(statusCombo, gbc); y++;
-        gbc.gridx=0; gbc.gridy=y; gbc.gridwidth=2;
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+
+        JTextField title = new JTextField(goal.getTitle(), 20);
+        JTextArea description = new JTextArea(goal.getDescription() == null ? "" : goal.getDescription(), 3, 20);
+        JTextField dateField = new JTextField(goal.getTargetDate().toString());
+        JComboBox<String> statusCombo = new JComboBox<>(new String[]{
+                Goal.STATUS_PENDING, Goal.STATUS_IN_PROGRESS, Goal.STATUS_COMPLETED});
+        statusCombo.setSelectedItem(goal.getStatus());
+
+        int y = 0;
+        gbc.gridx = 0;
+        gbc.gridy = y++;
+        dialog.add(new JLabel("Title:"), gbc);
+        gbc.gridx = 1;
+        dialog.add(title, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = y++;
+        dialog.add(new JLabel("Description:"), gbc);
+        gbc.gridx = 1;
+        dialog.add(new JScrollPane(description), gbc);
+        gbc.gridx = 0;
+        gbc.gridy = y++;
+        dialog.add(new JLabel("Target Date:"), gbc);
+        gbc.gridx = 1;
+        dialog.add(dateField, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = y++;
+        dialog.add(new JLabel("Status:"), gbc);
+        gbc.gridx = 1;
+        dialog.add(statusCombo, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = y;
+
         JButton save = new JButton("Update Goal");
-        save.addActionListener(ev -> {
+        save.addActionListener(event -> {
             try {
-                g.setTitle(title.getText().trim());
-                g.setDescription(desc.getText().trim());
-                g.setTargetDate(LocalDate.parse(dateField.getText().trim()));
-                g.setStatus((String)statusCombo.getSelectedItem());
-                new GoalDAO().update(g);
-                FileLogger.logInfo("Goal", "Updated goal #" + g.getGoalId());
-                JOptionPane.showMessageDialog(d, "Goal updated!");
-                d.dispose(); loadGoalsAsync();
-            } catch (Exception ex) { JOptionPane.showMessageDialog(d, "Failed: " + ex.getMessage()); }
-        });
-        d.add(save, gbc);
-        d.pack(); d.setLocationRelativeTo(this); d.setVisible(true);
-    }
-
-    private void deleteSelectedGoal() {
-        String input = JOptionPane.showInputDialog(this, "Enter Goal ID to delete:");
-        if (input == null || input.trim().isEmpty()) return;
-        try {
-            int id = Integer.parseInt(input.trim());
-            if (new GoalDAO().delete(id)) {
-                JOptionPane.showMessageDialog(this, "Deleted Goal #" + id);
+                Validator.requireText(title.getText(), "Title");
+                goal.setTitle(title.getText().trim());
+                goal.setDescription(description.getText().trim());
+                goal.setTargetDate(LocalDate.parse(dateField.getText().trim()));
+                goal.setStatus((String) statusCombo.getSelectedItem());
+                new GoalDAO().updateOwnedGoal(goal, employeeId);
+                FileLogger.logInfo("Goal", "Updated goal #" + goal.getGoalId());
+                JOptionPane.showMessageDialog(dialog, "Goal updated!");
+                dialog.dispose();
                 loadGoalsAsync();
-            } else JOptionPane.showMessageDialog(this, "Not found");
-        } catch (Exception ex) { JOptionPane.showMessageDialog(this, "Delete failed: " + ex.getMessage()); }
+            } catch (IllegalArgumentException e) {
+                JOptionPane.showMessageDialog(dialog, e.getMessage());
+            } catch (java.time.format.DateTimeParseException e) {
+                JOptionPane.showMessageDialog(dialog, "Use the date format YYYY-MM-DD.");
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(dialog, "Failed: " + e.getMessage());
+                FileLogger.logError("Goal update failed", e);
+            }
+        });
+        dialog.add(save, gbc);
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
     }
 
+    /**
+     * Deletes the selected goal.
+     */
+    private void deleteSelectedGoal() {
+        int row = goalsTable.getSelectedRow();
+        if (row < 0) {
+            JOptionPane.showMessageDialog(this, "Select a goal in the table first.");
+            return;
+        }
+        int id = (int) goalsModel.getValueAt(row, 0);
+        int answer = JOptionPane.showConfirmDialog(this,
+                "Delete goal #" + id + "?", "Confirm Delete", JOptionPane.YES_NO_OPTION);
+        if (answer != JOptionPane.YES_OPTION) {
+            return;
+        }
+        try {
+            if (new GoalDAO().deleteOwnedGoal(id, employeeId)) {
+                JOptionPane.showMessageDialog(this, "Deleted goal #" + id);
+                loadGoalsAsync();
+            } else {
+                JOptionPane.showMessageDialog(this, "Goal not found or not yours.");
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(this, "Failed: " + e.getMessage());
+            FileLogger.logError("Goal delete failed", e);
+        }
+    }
+
+    /**
+     * Exports this employee's evaluations to a CSV file chosen by the user.
+     */
     private void exportMyReport() {
         JFileChooser chooser = new JFileChooser();
         chooser.setSelectedFile(new java.io.File("my_evaluations_" + employeeId + ".csv"));
-        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
-            new SwingWorker<Void, Void>() {
-                protected Void doInBackground() throws Exception {
-                    List<Evaluation> list = new EvaluationDAO().getByEmployeeId(employeeId);
-                    ReportExporter.exportEvaluationsToCSV(list, chooser.getSelectedFile().getAbsolutePath());
-                    return null;
-                }
-                protected void done() {
-                    try { get(); JOptionPane.showMessageDialog(EmployeeDashboard.this, "Exported to " + chooser.getSelectedFile().getAbsolutePath() + "\n(File I/O demo)"); }
-                    catch (Exception ex) { JOptionPane.showMessageDialog(EmployeeDashboard.this, "Export failed: " + ex.getMessage()); }
-                }
-            }.execute();
+        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
         }
+        String path = chooser.getSelectedFile().getAbsolutePath();
+        new SwingWorker<Void, Void>() {
+            @Override
+            protected Void doInBackground() throws Exception {
+                List<Evaluation> evaluations = new EvaluationDAO().getByEmployeeId(employeeId);
+                ReportExporter.exportEvaluationsToCSV(evaluations, path);
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    JOptionPane.showMessageDialog(EmployeeDashboard.this, "Exported to " + path);
+                } catch (ExecutionException e) {
+                    Exception error = unwrap(e);
+                    JOptionPane.showMessageDialog(EmployeeDashboard.this, "Export failed: " + error.getMessage());
+                    FileLogger.logError("Report export failed", error);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    JOptionPane.showMessageDialog(EmployeeDashboard.this, "Export failed: " + e.getMessage());
+                }
+            }
+        }.execute();
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    /**
+     * Creates a table model whose rows cannot be edited directly.
+     *
+     * @param columns the column headings
+     * @return the read-only model
+     */
+    private static DefaultTableModel readOnlyModel(String... columns) {
+        return new DefaultTableModel(columns, 0) {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+    }
+
+    /**
+     * Unwraps the original exception from a failed background task.
+     *
+     * <p>{@code SwingWorker.get()} reports a failure as an
+     * {@link ExecutionException}; the real cause (usually a
+     * {@link java.sql.SQLException}) is what is worth showing and logging.
+     *
+     * @param e the wrapper exception
+     * @return the original cause, or the wrapper itself when there is none
+     */
+    private static Exception unwrap(ExecutionException e) {
+        Throwable cause = e.getCause();
+        return cause instanceof Exception ? (Exception) cause : e;
     }
 }

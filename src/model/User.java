@@ -22,7 +22,14 @@ public abstract class User {
 
     // Abstract method - Polymorphism
     public abstract String getDashboardType();
-    public abstract void displayInfo();
+
+    /**
+     * A short human-readable description of this user, used in the sign-in
+     * audit log. The model layer returns data; it never writes to the console.
+     *
+     * @return a one-line description, for example "Employee Priya Sharma (Sales)"
+     */
+    public abstract String describe();
 
     // Getters & Setters (Encapsulation)
     public int getUserId() { return userId; }

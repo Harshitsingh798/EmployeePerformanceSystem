@@ -1,0 +1,17 @@
+# Copy this file to db.properties and edit it for your machine.
+#
+#   Windows:  copy db.properties.example db.properties
+#   Linux:    cp db.properties.example db.properties
+#
+# db.properties is listed in .gitignore, so your real password never
+# reaches the repository.
+
+# The JDBC URL of your MySQL server.
+db.url=jdbc:mysql://localhost:3306/employee_performance_db
+
+# The MySQL user and password.
+db.user=root
+db.password=
+
+# Optional - the port and database name are part of the URL above.
+# db.url=jdbc:mysql://localhost:3306/employee_performance_db?useSSL=false&serverTimezone=UTC
