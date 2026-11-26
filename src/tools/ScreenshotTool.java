@@ -3,6 +3,7 @@ package tools;
 import ui.LoginFrame;
 
 import javax.imageio.ImageIO;
+import javax.swing.AbstractButton;
 import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
 import java.awt.Rectangle;
@@ -10,6 +11,7 @@ import java.awt.Robot;
 import java.awt.Window;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import ui.components.Sidebar;
 
 /**
  * Captures screenshots of the running application for the documentation.
@@ -23,6 +25,10 @@ import java.io.File;
  * <p>Each screenshot is taken of the application's own window rather than of
  * the whole screen, so whatever else is open on the desktop cannot end up in
  * the picture.
+ *
+ * <p>Both dashboards now use a {@link CardLayout}-based workspace driven by the
+ * {@link Sidebar} navigation, so {@link #selectTab} finds the sidebar and clicks
+ * the nav button whose label matches the requested tab title.
  */
 public final class ScreenshotTool {
 
@@ -88,48 +94,75 @@ public final class ScreenshotTool {
     }
 
     /**
-     * Switches a window to the tab with the given title.
+     * Switches a window to the card with the given sidebar label.
      *
-     * @param frame    the window to look in
-     * @param tabTitle the title of the tab to select
+     * @param frame     the window to look in
+     * @param tabTitle  the label of the sidebar button to click
      */
     private static void selectTab(java.awt.Container frame, String tabTitle) {
         SwingUtilities.invokeLater(() -> {
-            javax.swing.JTabbedPane tabs = findTabbedPane(frame);
-            if (tabs == null) {
-                System.out.println("No tabbed pane found for " + tabTitle);
+            Sidebar sidebar = findSidebar(frame);
+            if (sidebar == null) {
+                System.out.println("No sidebar found for " + tabTitle);
                 return;
             }
-            for (int i = 0; i < tabs.getTabCount(); i++) {
-                if (tabTitle.equals(tabs.getTitleAt(i))) {
-                    tabs.setSelectedIndex(i);
-                    System.out.println("Selected tab: " + tabTitle);
-                    return;
-                }
+            boolean found = clickButtonByText(sidebar, tabTitle);
+            if (found) {
+                System.out.println("Selected tab: " + tabTitle);
+            } else {
+                System.out.println("No tab named " + tabTitle);
             }
-            System.out.println("No tab named " + tabTitle);
         });
     }
 
     /**
-     * Finds the first tabbed pane inside a container.
+     * Finds the {@link Sidebar} inside a window, searching recursively.
      *
      * @param container the container to search
-     * @return the tabbed pane, or {@code null} when there is none
+     * @return the sidebar, or {@code null} when there is none
      */
-    private static javax.swing.JTabbedPane findTabbedPane(java.awt.Container container) {
+    private static Sidebar findSidebar(java.awt.Container container) {
         for (java.awt.Component child : container.getComponents()) {
-            if (child instanceof javax.swing.JTabbedPane tabs) {
-                return tabs;
+            if (child instanceof Sidebar sidebar) {
+                return sidebar;
             }
             if (child instanceof java.awt.Container nested) {
-                javax.swing.JTabbedPane found = findTabbedPane(nested);
+                Sidebar found = findSidebar(nested);
                 if (found != null) {
                     return found;
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * Clicks the first button inside the sidebar whose label matches the given
+     * title (comparison is case-insensitive and trims whitespace).
+     *
+     * @param sidebar the sidebar to search
+     * @param title   the button label to match
+     * @return {@code true} when a matching button was clicked
+     */
+    private static boolean clickButtonByText(Sidebar sidebar, String title) {
+        return clickButtonByTextRecursive(sidebar, title);
+    }
+
+    private static boolean clickButtonByTextRecursive(java.awt.Container container, String title) {
+        for (java.awt.Component child : container.getComponents()) {
+            if (child instanceof AbstractButton button) {
+                if (title != null && title.trim().equalsIgnoreCase(button.getText().trim())) {
+                    button.doClick();
+                    return true;
+                }
+            }
+            if (child instanceof java.awt.Container nested) {
+                if (clickButtonByTextRecursive(nested, title)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**

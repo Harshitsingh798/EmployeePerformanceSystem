@@ -12,12 +12,18 @@ import model.Evaluation;
 import model.Feedback;
 import model.Goal;
 import model.Team;
+import service.ReportService;
+import ui.components.ChartPanel;
+import ui.components.KPICard;
+import ui.components.RoundedPanel;
+import ui.components.Sidebar;
+import ui.components.TableRenderers;
 import util.FileLogger;
 import util.Icons;
 import util.Validator;
-import ui.components.ChartPanel;
 
 import javax.swing.BorderFactory;
+import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JDialog;
@@ -26,10 +32,10 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
-import javax.swing.JTabbedPane;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.SwingConstants;
 import javax.swing.SwingWorker;
 import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
@@ -37,15 +43,15 @@ import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableModel;
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
-import java.awt.GridLayout;
 import java.awt.Insets;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -55,12 +61,14 @@ import java.util.concurrent.ExecutionException;
 /**
  * The manager's workspace.
  *
- * <p>Five tabs - evaluation, goals, feedback, reports and team management -
+ * <p>Five sections - evaluation, goals, feedback, reports and team management -
  * all backed by the live database. Every query is scoped to the signed-in
  * manager, so a manager only ever sees their own team.
  *
- * <p>All database access happens on a {@link SwingWorker}, so the user
- * interface never blocks while a query runs.
+ * <p>The UI uses a dark-navy left sidebar with a {@link CardLayout} main
+ * workspace, matching the modern Light SaaS Sidebar Redesign. All database
+ * access happens on a {@link SwingWorker}, so the interface never blocks while
+ * a query runs.
  */
 public final class ManagerDashboard extends JFrame {
 
@@ -83,8 +91,12 @@ public final class ManagerDashboard extends JFrame {
     private final JTable teamTable;
 
     private final JLabel statusLabel = new JLabel("  Loading data from database...");
-    private final JPanel reportBarSlot = new JPanel(new BorderLayout());
-    private final JPanel reportPieSlot = new JPanel(new BorderLayout());
+
+    /** The card that holds all workspace views. */
+    private final JPanel workspace = new JPanel(new java.awt.CardLayout());
+
+    /** The search field, declared here so the debounce timer can read it. */
+    private final JTextField searchField = new JTextField(20);
 
     /** The search worker currently in flight, so a new keystroke can cancel it. */
     private transient SwingWorker<List<Evaluation>, Void> searchWorker;
@@ -94,6 +106,28 @@ public final class ManagerDashboard extends JFrame {
 
     /** The employees reporting to this manager - used to populate the pickers. */
     private transient List<Employee> teamMembers = new ArrayList<>();
+
+    /** Card names. */
+    private static final String CARD_EVAL = "EVALUATIONS";
+    private static final String CARD_GOALS = "GOALS";
+    private static final String CARD_FEEDBACK = "FEEDBACK";
+    private static final String CARD_REPORTS = "REPORTS";
+    private static final String CARD_TEAM = "TEAM";
+
+    /** Slots for the report charts, populated by {@link #loadReportAsync}. */
+    private final JPanel reportBarSlot = new JPanel(new BorderLayout());
+    private final JPanel reportPieSlot = new JPanel(new BorderLayout());
+
+    /** KPI strip for the evaluation view, populated after data loads. */
+    private JPanel evalKpiStrip;
+    private KPICard teamAvgKpi;
+    private KPICard totalEvalKpi;
+    private KPICard topPerformerKpi;
+    private KPICard pendingGoalsKpi;
+
+    /** Report insight cards, updated when report averages load. */
+    private KPICard strongestSkillCard;
+    private KPICard improveSkillCard;
 
     /**
      * Builds the dashboard.
@@ -106,7 +140,7 @@ public final class ManagerDashboard extends JFrame {
         this.managerId = managerId;
 
         setTitle("Manager Dashboard - " + this.managerName + " | Performetrics");
-        setSize(1080, 680);
+        setSize(1200, 720);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
 
@@ -120,53 +154,105 @@ public final class ManagerDashboard extends JFrame {
         feedbackTable = new JTable(feedbackModel);
         teamTable = new JTable(teamModel);
 
+        styleTable(evalTable, 1, new int[]{6}, new int[0]);
+        styleTable(goalTable, -1, new int[0], new int[]{4});
+        styleTable(feedbackTable, -1, new int[]{2}, new int[0]);
+        styleTable(teamTable, 1, new int[0], new int[0]);
+
         searchTimer = new Timer(SEARCH_DEBOUNCE_MS, event -> runSearch(searchField.getText()));
         searchTimer.setRepeats(false);
 
-        JPanel top = new JPanel(new BorderLayout());
-        top.setBackground(new Color(33, 33, 33));
-        JLabel welcome = new JLabel("  Manager: " + this.managerName + "  (ID: " + managerId + ")");
-        welcome.setForeground(Color.WHITE);
-        welcome.setFont(new Font("Segoe UI", Font.BOLD, 15));
-        top.add(welcome, BorderLayout.WEST);
-        JButton logout = new JButton("Logout");
-        logout.addActionListener(event -> {
-            dispose();
-            new LoginFrame().setVisible(true);
-        });
-        top.add(logout, BorderLayout.EAST);
-        add(top, BorderLayout.NORTH);
+        // Sidebar navigation. Each nav button is named with its card key so the
+        // listener knows which workspace card to show.
+        Map<String, String> sections = new LinkedHashMap<>();
+        sections.put(CARD_EVAL, "Performance Evaluation");
+        sections.put(CARD_GOALS, "Goal Setting");
+        sections.put(CARD_FEEDBACK, "Feedback Provision");
+        sections.put(CARD_REPORTS, "Performance Reports");
+        sections.put(CARD_TEAM, "Team Management");
 
-        JTabbedPane tabs = new JTabbedPane();
-        tabs.setFont(new Font("Segoe UI", Font.PLAIN, 13));
-        tabs.addTab("Performance Evaluation", createEvaluationPanel());
-        tabs.addTab("Goal Setting", createGoalPanel());
-        tabs.addTab("Feedback Provision", createFeedbackPanel());
-        tabs.addTab("Performance Reports", createReportsPanel());
-        tabs.addTab("Team Management", createTeamPanel());
-        add(tabs, BorderLayout.CENTER);
+        Sidebar sidebar = new Sidebar(managerName, "Manager (ID: " + managerId + ")", sections,
+                event -> {
+                    javax.swing.AbstractButton button = (javax.swing.AbstractButton) event.getSource();
+                    showCard(button.getName());
+                });
+        sidebar.addLogout(event -> logout());
+        int index = 0;
+        for (String key : sections.keySet()) {
+            sidebar.navButtonAt(index).setName(key);
+            index++;
+        }
 
-        statusLabel.setBorder(BorderFactory.createEtchedBorder());
+        // Build the workspace cards.
+        workspace.setOpaque(false);
+        workspace.setBorder(new javax.swing.border.EmptyBorder(18, 24, 16, 24));
+        workspace.add(createEvaluationPanel(), CARD_EVAL);
+        workspace.add(createGoalPanel(), CARD_GOALS);
+        workspace.add(createFeedbackPanel(), CARD_FEEDBACK);
+        workspace.add(createReportsPanel(), CARD_REPORTS);
+        workspace.add(createTeamPanel(), CARD_TEAM);
+
+        // Main layout: sidebar + workspace.
+        JPanel root = new JPanel(new BorderLayout());
+        root.setBackground(Icons.CANVAS_BG);
+        root.add(sidebar, BorderLayout.WEST);
+        root.add(workspace, BorderLayout.CENTER);
+        add(root, BorderLayout.CENTER);
+
+        statusLabel.setFont(Icons.font(11f));
+        statusLabel.setForeground(Icons.MUTED_TEXT);
+        statusLabel.setBackground(Icons.CANVAS_BG);
+        statusLabel.setOpaque(true);
+        statusLabel.setBorder(BorderFactory.createEmptyBorder(6, 14, 6, 14));
         add(statusLabel, BorderLayout.SOUTH);
 
+        showCard(CARD_EVAL);
         loadAllDataAsync();
     }
 
     /**
-     * The search field, declared here so the debounce timer can read it.
+     * Shows the workspace card with the given name.
+     *
+     * @param card the card name
      */
-    private final JTextField searchField = new JTextField(20);
+    private void showCard(String card) {
+        java.awt.CardLayout layout = (java.awt.CardLayout) workspace.getLayout();
+        layout.show(workspace, card);
+    }
+
+    /**
+     * Signs out and returns to the login screen.
+     */
+    private void logout() {
+        dispose();
+        new LoginFrame().setVisible(true);
+    }
 
     // ------------------------------------------------------------------ panels
 
     /**
-     * Builds the evaluation tab: a searchable table plus the CRUD buttons.
+     * Builds the evaluation view: a searchable table plus the CRUD buttons.
      */
     private JPanel createEvaluationPanel() {
         JPanel panel = new JPanel(new BorderLayout());
+        panel.setOpaque(false);
 
-        JPanel top = new JPanel(new BorderLayout());
+        // Page header + toolbar + KPI strip all live in the north region as a
+        // vertical stack.
+        JPanel north = new JPanel();
+        north.setLayout(new BoxLayout(north, BoxLayout.Y_AXIS));
+        north.setOpaque(false);
+
+        north.add(pageHeader("Performance Evaluation",
+                "Track your team's performance evaluations"));
+
+        JPanel toolbar = new JPanel(new BorderLayout(10, 0));
+        toolbar.setOpaque(false);
+        toolbar.setBorder(new javax.swing.border.EmptyBorder(8, 0, 10, 0));
+        toolbar.setAlignmentX(Component.LEFT_ALIGNMENT);
+
         searchField.setToolTipText("Search by employee name or comments");
+        searchField.putClientProperty("JTextField.placeholderText", "Search employees, comments...");
         searchField.getDocument().addDocumentListener(new DocumentListener() {
             @Override
             public void insertUpdate(DocumentEvent event) {
@@ -183,116 +269,345 @@ public final class ManagerDashboard extends JFrame {
                 scheduleSearch();
             }
         });
-        top.add(new JLabel("Search: "), BorderLayout.WEST);
-        top.add(searchField, BorderLayout.CENTER);
-        panel.add(top, BorderLayout.NORTH);
 
-        panel.add(new JScrollPane(evalTable), BorderLayout.CENTER);
+        JPanel searchWrap = new JPanel(new BorderLayout(8, 0));
+        searchWrap.setOpaque(false);
+        Icons.styleInput(searchField);
+        searchField.setPreferredSize(new java.awt.Dimension(260, 36));
+        JLabel searchIcon = new JLabel(Icons.vector(Icons.Symbol.SEARCH, 15, Icons.MUTED_TEXT));
+        searchWrap.add(searchIcon, BorderLayout.WEST);
+        searchWrap.add(searchField, BorderLayout.CENTER);
 
-        JPanel buttons = new JPanel();
         JButton add = new JButton("Add Evaluation");
-        JButton edit = new JButton("Edit Selected");
-        JButton refresh = new JButton("Refresh");
-        JButton delete = new JButton("Delete Selected");
+        Icons.stylePrimary(add, "Add Evaluation");
+        add.setIcon(Icons.vector(Icons.Symbol.PLUS, 14, Color.WHITE));
+        add.setIconTextGap(6);
         add.addActionListener(event -> showAddEvaluationDialog());
+
+        JButton edit = new JButton("Edit Selected");
+        Icons.styleSecondary(edit, "Edit Selected");
+        edit.setIcon(Icons.vector(Icons.Symbol.EDIT, 14, Icons.BODY_TEXT));
+        edit.setIconTextGap(6);
         edit.addActionListener(event -> editSelectedEvaluation());
+
+        JButton refresh = new JButton("Refresh");
+        Icons.styleSecondary(refresh, "Refresh");
+        refresh.setIcon(Icons.vector(Icons.Symbol.REFRESH, 14, Icons.BODY_TEXT));
+        refresh.setIconTextGap(6);
         refresh.addActionListener(event -> loadEvaluationsAsync());
+
+        JButton delete = new JButton("Delete Selected");
+        Icons.styleDestructive(delete, "Delete Selected");
+        delete.setIcon(Icons.vector(Icons.Symbol.TRASH, 14, Icons.DESTRUCTIVE));
+        delete.setIconTextGap(6);
         delete.addActionListener(event -> deleteSelectedEvaluation());
-        Icons.styleButton(add, "Add", new Color(41, 98, 255), Color.WHITE);
-        Icons.styleButton(edit, "Edit", new Color(255, 152, 0), Color.WHITE);
-        Icons.styleButton(refresh, "Refresh", new Color(40, 167, 69), Color.WHITE);
-        Icons.styleButton(delete, "Delete", new Color(220, 53, 69), Color.WHITE);
-        buttons.add(add);
-        buttons.add(edit);
-        buttons.add(refresh);
-        buttons.add(delete);
-        panel.add(buttons, BorderLayout.SOUTH);
+
+        JPanel actions = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 8, 0));
+        actions.setOpaque(false);
+        actions.add(add);
+        actions.add(edit);
+        actions.add(refresh);
+        actions.add(delete);
+
+        toolbar.add(searchWrap, BorderLayout.WEST);
+        toolbar.add(actions, BorderLayout.EAST);
+        north.add(toolbar);
+
+        // KPI strip.
+        evalKpiStrip = new JPanel(new java.awt.GridLayout(1, 4, 14, 0));
+        evalKpiStrip.setOpaque(false);
+        evalKpiStrip.setBorder(new javax.swing.border.EmptyBorder(4, 0, 14, 0));
+        evalKpiStrip.setAlignmentX(Component.LEFT_ALIGNMENT);
+        teamAvgKpi = new KPICard("Team Average", "--", "Average across evaluations", Icons.PRIMARY, Icons.Symbol.STAR);
+        totalEvalKpi = new KPICard("Total Evaluations", "--", "Recorded by you", Icons.MUTED_TEXT, Icons.Symbol.CLIPBOARD);
+        topPerformerKpi = new KPICard("Top Performer", "--", "Highest score", Icons.STATUS_COMPLETED, Icons.Symbol.TROPHY);
+        pendingGoalsKpi = new KPICard("Pending Goals", "--", "In-progress targets", Icons.STATUS_IN_PROGRESS, Icons.Symbol.TARGET);
+        evalKpiStrip.add(teamAvgKpi);
+        evalKpiStrip.add(totalEvalKpi);
+        evalKpiStrip.add(topPerformerKpi);
+        evalKpiStrip.add(pendingGoalsKpi);
+        north.add(evalKpiStrip);
+
+        panel.add(north, BorderLayout.NORTH);
+
+        // Table card.
+        RoundedPanel tableCard = new RoundedPanel(14);
+        tableCard.setBackground(Icons.CARD_BG);
+        tableCard.setLayout(new BorderLayout());
+        tableCard.add(cleanScroll(evalTable), BorderLayout.CENTER);
+        panel.add(tableCard, BorderLayout.CENTER);
+
         return panel;
     }
 
     /**
-     * Builds the goal tab.
+     * Builds the goal view.
      */
     private JPanel createGoalPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-        panel.add(new JScrollPane(goalTable), BorderLayout.CENTER);
+        panel.setOpaque(false);
 
-        JPanel buttons = new JPanel();
         JButton add = new JButton("Set New Goal");
-        JButton edit = new JButton("Edit Selected");
-        JButton refresh = new JButton("Refresh");
+        Icons.stylePrimary(add, "Set New Goal");
+        add.setIcon(Icons.vector(Icons.Symbol.PLUS, 14, Color.WHITE));
+        add.setIconTextGap(6);
         add.addActionListener(event -> showAddGoalDialog());
+
+        JButton edit = new JButton("Edit Selected");
+        Icons.styleSecondary(edit, "Edit Selected");
+        edit.setIcon(Icons.vector(Icons.Symbol.EDIT, 14, Icons.BODY_TEXT));
+        edit.setIconTextGap(6);
         edit.addActionListener(event -> editSelectedGoal());
+
+        JButton refresh = new JButton("Refresh");
+        Icons.styleSecondary(refresh, "Refresh");
+        refresh.setIcon(Icons.vector(Icons.Symbol.REFRESH, 14, Icons.BODY_TEXT));
+        refresh.setIconTextGap(6);
         refresh.addActionListener(event -> loadGoalsAsync());
-        buttons.add(add);
-        buttons.add(edit);
-        buttons.add(refresh);
-        panel.add(buttons, BorderLayout.SOUTH);
+
+        panel.add(headerWithActions("Goal Setting",
+                "Assign and track goals for your team", add, edit, refresh), BorderLayout.NORTH);
+
+        RoundedPanel tableCard = new RoundedPanel(14);
+        tableCard.setBackground(Icons.CARD_BG);
+        tableCard.setLayout(new BorderLayout());
+        tableCard.add(cleanScroll(goalTable), BorderLayout.CENTER);
+        panel.add(tableCard, BorderLayout.CENTER);
+
         return panel;
     }
 
     /**
-     * Builds the feedback tab.
+     * Builds the feedback view.
      */
     private JPanel createFeedbackPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-        panel.add(new JScrollPane(feedbackTable), BorderLayout.CENTER);
+        panel.setOpaque(false);
 
-        JPanel buttons = new JPanel();
         JButton add = new JButton("Give Feedback");
-        JButton edit = new JButton("Edit Selected");
-        JButton refresh = new JButton("Refresh");
+        Icons.stylePrimary(add, "Give Feedback");
+        add.setIcon(Icons.vector(Icons.Symbol.PLUS, 14, Color.WHITE));
+        add.setIconTextGap(6);
         add.addActionListener(event -> showAddFeedbackDialog());
+
+        JButton edit = new JButton("Edit Selected");
+        Icons.styleSecondary(edit, "Edit Selected");
+        edit.setIcon(Icons.vector(Icons.Symbol.EDIT, 14, Icons.BODY_TEXT));
+        edit.setIconTextGap(6);
         edit.addActionListener(event -> editSelectedFeedback());
+
+        JButton refresh = new JButton("Refresh");
+        Icons.styleSecondary(refresh, "Refresh");
+        refresh.setIcon(Icons.vector(Icons.Symbol.REFRESH, 14, Icons.BODY_TEXT));
+        refresh.setIconTextGap(6);
         refresh.addActionListener(event -> loadFeedbackAsync());
-        buttons.add(add);
-        buttons.add(edit);
-        buttons.add(refresh);
-        panel.add(buttons, BorderLayout.SOUTH);
+
+        panel.add(headerWithActions("Feedback Provision",
+                "Give feedback to your team members", add, edit, refresh), BorderLayout.NORTH);
+
+        RoundedPanel tableCard = new RoundedPanel(14);
+        tableCard.setBackground(Icons.CARD_BG);
+        tableCard.setLayout(new BorderLayout());
+        tableCard.add(cleanScroll(feedbackTable), BorderLayout.CENTER);
+        panel.add(tableCard, BorderLayout.CENTER);
+
         return panel;
     }
 
     /**
-     * Builds the reports tab with the two charts and the CSV export button.
+     * Builds the reports view with the bar and donut charts plus insight cards.
      */
     private JPanel createReportsPanel() {
-        JPanel charts = new JPanel(new GridLayout(1, 2, 10, 10));
-        charts.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        reportBarSlot.setBorder(BorderFactory.createTitledBorder("Team Average Scores (Bar)"));
-        reportPieSlot.setBorder(BorderFactory.createTitledBorder("Criteria Breakdown (Pie)"));
-        charts.add(reportBarSlot);
-        charts.add(reportPieSlot);
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setOpaque(false);
 
-        JButton export = new JButton("Export Team Report to CSV");
+        JButton export = new JButton("Export Team Report (CSV)");
+        Icons.styleSecondary(export, "Export Team Report (CSV)");
+        export.setIcon(Icons.vector(Icons.Symbol.DOWNLOAD, 14, Icons.BODY_TEXT));
+        export.setIconTextGap(6);
         export.addActionListener(event -> exportReport());
 
-        JPanel wrapper = new JPanel(new BorderLayout());
-        wrapper.add(charts, BorderLayout.CENTER);
-        JPanel south = new JPanel();
-        south.add(export);
-        wrapper.add(south, BorderLayout.SOUTH);
-        return wrapper;
+        panel.add(headerWithActions("Performance Reports",
+                "Team averages, criteria breakdown and export", export), BorderLayout.NORTH);
+
+        // Two chart cards side by side.
+        JPanel charts = new JPanel(new java.awt.GridLayout(1, 2, 14, 14));
+        charts.setOpaque(false);
+        charts.setBorder(new javax.swing.border.EmptyBorder(0, 0, 14, 0));
+
+        RoundedPanel barCard = new RoundedPanel(14);
+        barCard.setBackground(Icons.CARD_BG);
+        barCard.setLayout(new BorderLayout());
+        JLabel barTitle = new JLabel("Avg Score per Employee", SwingConstants.LEFT);
+        barTitle.setFont(Icons.bold(14f));
+        barTitle.setForeground(Icons.HEADING_TEXT);
+        barTitle.setBorder(new javax.swing.border.EmptyBorder(4, 4, 10, 4));
+        barCard.add(barTitle, BorderLayout.NORTH);
+        reportBarSlot.setBackground(Color.WHITE);
+        barCard.add(reportBarSlot, BorderLayout.CENTER);
+        charts.add(barCard);
+
+        RoundedPanel donutCard = new RoundedPanel(14);
+        donutCard.setBackground(Icons.CARD_BG);
+        donutCard.setLayout(new BorderLayout());
+        JLabel donutTitle = new JLabel("Criteria Averages", SwingConstants.LEFT);
+        donutTitle.setFont(Icons.bold(14f));
+        donutTitle.setForeground(Icons.HEADING_TEXT);
+        donutTitle.setBorder(new javax.swing.border.EmptyBorder(4, 4, 10, 4));
+        donutCard.add(donutTitle, BorderLayout.NORTH);
+        reportPieSlot.setBackground(Color.WHITE);
+        donutCard.add(reportPieSlot, BorderLayout.CENTER);
+        charts.add(donutCard);
+
+        panel.add(charts, BorderLayout.CENTER);
+
+        // Insight strip.
+        JPanel insight = new JPanel(new java.awt.GridLayout(1, 2, 14, 0));
+        insight.setOpaque(false);
+        insight.setBorder(new javax.swing.border.EmptyBorder(4, 0, 0, 0));
+        strongestSkillCard = new KPICard("Strongest Skill", "--", "Highest team criterion",
+                Icons.STATUS_COMPLETED, Icons.Symbol.TROPHY);
+        improveSkillCard = new KPICard("Area to Improve", "--", "Lowest team criterion",
+                Icons.STATUS_IN_PROGRESS, Icons.Symbol.TARGET);
+        insight.add(strongestSkillCard);
+        insight.add(improveSkillCard);
+        panel.add(insight, BorderLayout.SOUTH);
+
+        return panel;
     }
 
     /**
-     * Builds the team management tab.
+     * Builds the team management view.
      */
     private JPanel createTeamPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-        panel.add(new JScrollPane(teamTable), BorderLayout.CENTER);
+        panel.setOpaque(false);
 
-        JPanel buttons = new JPanel();
-        JButton addMember = new JButton("Add Member to Team");
-        JButton assignRole = new JButton("Assign Role");
-        JButton refresh = new JButton("Refresh");
+        JButton addMember = new JButton("Add Member");
+        Icons.stylePrimary(addMember, "Add Member");
+        addMember.setIcon(Icons.vector(Icons.Symbol.PLUS, 14, Color.WHITE));
+        addMember.setIconTextGap(6);
         addMember.addActionListener(event -> showAddMemberDialog(false));
+
+        JButton assignRole = new JButton("Assign Role");
+        Icons.styleSecondary(assignRole, "Assign Role");
+        assignRole.setIcon(Icons.vector(Icons.Symbol.EDIT, 14, Icons.BODY_TEXT));
+        assignRole.setIconTextGap(6);
         assignRole.addActionListener(event -> showAddMemberDialog(true));
+
+        JButton refresh = new JButton("Refresh");
+        Icons.styleSecondary(refresh, "Refresh");
+        refresh.setIcon(Icons.vector(Icons.Symbol.REFRESH, 14, Icons.BODY_TEXT));
+        refresh.setIconTextGap(6);
         refresh.addActionListener(event -> loadTeamAsync());
-        buttons.add(addMember);
-        buttons.add(assignRole);
-        buttons.add(refresh);
-        panel.add(buttons, BorderLayout.SOUTH);
+
+        panel.add(headerWithActions("Team Management",
+                "Manage your team members and their roles", addMember, assignRole, refresh), BorderLayout.NORTH);
+
+        RoundedPanel tableCard = new RoundedPanel(14);
+        tableCard.setBackground(Icons.CARD_BG);
+        tableCard.setLayout(new BorderLayout());
+        tableCard.add(cleanScroll(teamTable), BorderLayout.CENTER);
+        panel.add(tableCard, BorderLayout.CENTER);
+
         return panel;
+    }
+
+    /**
+     * Builds a combined header row with title/subtitle on the left and action buttons on the right.
+     */
+    private JPanel headerWithActions(String title, String subtitle, JButton... buttons) {
+        JPanel row = new JPanel(new BorderLayout(12, 0));
+        row.setOpaque(false);
+        row.setBorder(new javax.swing.border.EmptyBorder(0, 0, 14, 0));
+        row.add(pageHeader(title, subtitle), BorderLayout.WEST);
+
+        JPanel actions = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 8, 6));
+        actions.setOpaque(false);
+        for (JButton button : buttons) {
+            actions.add(button);
+        }
+        row.add(actions, BorderLayout.EAST);
+        return row;
+    }
+
+    private JScrollPane cleanScroll(JTable table) {
+        JScrollPane scroll = new JScrollPane(table);
+        scroll.setBorder(BorderFactory.createEmptyBorder());
+        scroll.getViewport().setBackground(Color.WHITE);
+        return scroll;
+    }
+
+    // ------------------------------------------------------------------ page header
+
+    /**
+     * Builds a consistent page header: title, subtitle and a thin divider.
+     *
+     * @param title    the page title
+     * @param subtitle the page subtitle
+     * @return the header panel
+     */
+    private JPanel pageHeader(String title, String subtitle) {
+        JPanel header = new JPanel(new BorderLayout(8, 4));
+        header.setOpaque(false);
+        header.setBorder(new javax.swing.border.EmptyBorder(10, 0, 10, 0));
+        header.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        JLabel titleLabel = new JLabel(title);
+        titleLabel.setFont(Icons.bold(20f));
+        titleLabel.setForeground(Icons.HEADING_TEXT);
+
+        JLabel subtitleLabel = new JLabel(subtitle);
+        subtitleLabel.setFont(Icons.font(13f));
+        subtitleLabel.setForeground(Icons.MUTED_TEXT);
+
+        header.add(titleLabel, BorderLayout.NORTH);
+        header.add(subtitleLabel, BorderLayout.SOUTH);
+        return header;
+    }
+
+    // ------------------------------------------------------------------ table styling
+
+    /**
+     * Applies the modern table style: row height, padding, renderers.
+     *
+     * @param table    the table to style
+     * @param scoreCols column indexes that should render as score pill badges
+     */
+    private void styleTable(JTable table, int employeeCol, int[] scoreCols, int[] statusCols) {
+        table.setRowHeight(46);
+        table.setShowVerticalLines(false);
+        table.setShowHorizontalLines(true);
+        table.setGridColor(new Color(0xF1F5F9));
+        table.setIntercellSpacing(new java.awt.Dimension(0, 0));
+        table.setFont(Icons.font(13f));
+        table.setBackground(Color.WHITE);
+        table.getTableHeader().setReorderingAllowed(false);
+        table.getTableHeader().setDefaultRenderer(TableRenderers.header());
+        table.getTableHeader().setPreferredSize(new java.awt.Dimension(0, 38));
+
+        for (int col = 0; col < table.getColumnCount(); col++) {
+            table.getColumnModel().getColumn(col).setCellRenderer(TableRenderers.cell());
+        }
+
+        if (employeeCol >= 0 && employeeCol < table.getColumnCount()) {
+            table.getColumnModel().getColumn(employeeCol).setCellRenderer(TableRenderers.employee());
+            table.getColumnModel().getColumn(employeeCol).setPreferredWidth(180);
+        }
+
+        for (int col : scoreCols) {
+            if (col >= 0 && col < table.getColumnCount()) {
+                table.getColumnModel().getColumn(col).setCellRenderer(TableRenderers.score());
+                table.getColumnModel().getColumn(col).setPreferredWidth(90);
+            }
+        }
+
+        for (int col : statusCols) {
+            if (col >= 0 && col < table.getColumnCount()) {
+                table.getColumnModel().getColumn(col).setCellRenderer(TableRenderers.status());
+                table.getColumnModel().getColumn(col).setPreferredWidth(120);
+            }
+        }
     }
 
     // ------------------------------------------------------------- async loading
@@ -336,6 +651,7 @@ public final class ManagerDashboard extends JFrame {
                                 evaluation.getComments()});
                     }
                     statusLabel.setText("  Evaluations loaded: " + evaluations.size());
+                    updateEvalKPIs(evaluations);
                     FileLogger.logInfo("Load", "Manager loaded " + evaluations.size() + " evaluations");
                 } catch (ExecutionException e) {
                     Exception error = unwrap(e);
@@ -348,6 +664,34 @@ public final class ManagerDashboard extends JFrame {
                 }
             }
         }.execute();
+    }
+
+    /**
+     * Updates the evaluation KPI cards from the loaded data.
+     */
+    private void updateEvalKPIs(List<Evaluation> evaluations) {
+        double teamAverage = 0;
+        if (!evaluations.isEmpty()) {
+            teamAverage = evaluations.stream()
+                    .mapToDouble(Evaluation::calculateScore).average().orElse(0);
+        }
+        String topPerformer = "--";
+        if (!evaluations.isEmpty()) {
+            Evaluation top = evaluations.stream()
+                    .max(Comparator.comparingDouble(Evaluation::calculateScore))
+                    .orElse(null);
+            topPerformer = top == null ? "--" : displayName(top.getEmployeeName(), top.getEmployeeId());
+        }
+
+        if (teamAvgKpi != null) {
+            teamAvgKpi.setValue(evaluations.isEmpty() ? "--" : String.format(Locale.ROOT, "%.2f / 5.0", teamAverage));
+        }
+        if (totalEvalKpi != null) {
+            totalEvalKpi.setValue(String.valueOf(evaluations.size()));
+        }
+        if (topPerformerKpi != null) {
+            topPerformerKpi.setValue(topPerformer);
+        }
     }
 
     /**
@@ -365,7 +709,11 @@ public final class ManagerDashboard extends JFrame {
                 try {
                     List<Goal> goals = get();
                     goalModel.setRowCount(0);
+                    int pendingCount = 0;
                     for (Goal goal : goals) {
+                        if (!Goal.STATUS_COMPLETED.equalsIgnoreCase(goal.getStatus())) {
+                            pendingCount++;
+                        }
                         goalModel.addRow(new Object[]{
                                 goal.getGoalId(),
                                 goal.getTitle(),
@@ -373,6 +721,9 @@ public final class ManagerDashboard extends JFrame {
                                 goal.getTargetDate(),
                                 goal.getStatus(),
                                 goal.isPersonal() ? "Yes" : "No"});
+                    }
+                    if (pendingGoalsKpi != null) {
+                        pendingGoalsKpi.setValue(String.valueOf(pendingCount));
                     }
                 } catch (ExecutionException e) {
                     Exception error = unwrap(e);
@@ -472,9 +823,7 @@ public final class ManagerDashboard extends JFrame {
                 Map<Integer, Double> averages = dao.getAverageScoresByEmployee(managerId);
                 List<Evaluation> all = dao.getByManagerId(managerId);
 
-                // Resolve the names here rather than reading teamMembers, which the
-                // team loader may not have filled in yet.
-                Map<Integer, String> names = new HashMap<>();
+                Map<Integer, String> names = new java.util.HashMap<>();
                 for (Employee employee : new UserDAO().getEmployeesForManager(managerId)) {
                     names.put(employee.getUserId(), employee.getName());
                 }
@@ -517,13 +866,30 @@ public final class ManagerDashboard extends JFrame {
                     Map<String, Double> pieData = (Map<String, Double>) result[1];
 
                     reportBarSlot.removeAll();
-                    reportBarSlot.add(ChartPanel.bar("Avg Score per Employee", "Score", barData), BorderLayout.CENTER);
+                    reportBarSlot.add(ChartPanel.bar(null, "Score", barData), BorderLayout.CENTER);
                     reportPieSlot.removeAll();
-                    reportPieSlot.add(ChartPanel.pie("Criteria Averages", pieData), BorderLayout.CENTER);
+                    reportPieSlot.add(ChartPanel.donut(null, pieData, true), BorderLayout.CENTER);
                     reportBarSlot.revalidate();
                     reportBarSlot.repaint();
                     reportPieSlot.revalidate();
                     reportPieSlot.repaint();
+
+                    if (!pieData.isEmpty()) {
+                        Map.Entry<String, Double> strongest = pieData.entrySet().stream()
+                                .max(Map.Entry.comparingByValue()).orElse(null);
+                        Map.Entry<String, Double> weakest = pieData.entrySet().stream()
+                                .min(Map.Entry.comparingByValue()).orElse(null);
+                        if (strongest != null && strongestSkillCard != null) {
+                            strongestSkillCard.setValue(strongest.getKey() + ": "
+                                    + String.format(Locale.ROOT, "%.2f", strongest.getValue()));
+                            strongestSkillCard.setSubtitle("Highest team average criterion");
+                        }
+                        if (weakest != null && improveSkillCard != null) {
+                            improveSkillCard.setValue(weakest.getKey() + ": "
+                                    + String.format(Locale.ROOT, "%.2f", weakest.getValue()));
+                            improveSkillCard.setSubtitle("Focus area for improvement");
+                        }
+                    }
                 } catch (ExecutionException e) {
                     Exception error = unwrap(e);
                     statusLabel.setText("  Report load failed: " + error.getMessage());
@@ -537,7 +903,7 @@ public final class ManagerDashboard extends JFrame {
         }.execute();
     }
 
-    // ------------------------------------------------------------------ search
+    // ------------------------------------------------------------- search
 
     /**
      * Restarts the debounce timer whenever the search box changes.
@@ -621,7 +987,7 @@ public final class ManagerDashboard extends JFrame {
         JDialog dialog = new JDialog(this, updateOnly ? "Update Member Role" : "Add Member to Team", true);
         dialog.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.insets = new Insets(8, 8, 8, 8);
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
         JComboBox<Team> teamPicker = new JComboBox<>(teams.toArray(new Team[0]));
@@ -649,6 +1015,7 @@ public final class ManagerDashboard extends JFrame {
         gbc.gridy = y;
 
         JButton save = new JButton("Save");
+        Icons.stylePrimary(save, "Save");
         save.addActionListener(event -> {
             Team team = (Team) teamPicker.getSelectedItem();
             Employee employee = (Employee) employeePicker.getSelectedItem();
@@ -671,6 +1038,7 @@ public final class ManagerDashboard extends JFrame {
                             + " role '" + role + "' in team " + team.getTeamId());
                     JOptionPane.showMessageDialog(dialog, "Saved!");
                     dialog.dispose();
+                    loadTeamAsync();
                 } else {
                     JOptionPane.showMessageDialog(dialog,
                             updateOnly ? "That employee is not a member of the selected team."
@@ -699,7 +1067,7 @@ public final class ManagerDashboard extends JFrame {
         JDialog dialog = new JDialog(this, "Add Evaluation", true);
         dialog.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.insets = new Insets(8, 8, 8, 8);
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
         JComboBox<Employee> employeePicker = new JComboBox<>(teamMembers.toArray(new Employee[0]));
@@ -744,6 +1112,7 @@ public final class ManagerDashboard extends JFrame {
         gbc.gridy = y;
 
         JButton save = new JButton("Save");
+        Icons.stylePrimary(save, "Save");
         save.addActionListener(event -> {
             Employee employee = (Employee) employeePicker.getSelectedItem();
             if (employee == null) {
@@ -791,7 +1160,7 @@ public final class ManagerDashboard extends JFrame {
         JDialog dialog = new JDialog(this, "Set New Goal", true);
         dialog.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.insets = new Insets(8, 8, 8, 8);
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
         JTextField title = new JTextField(20);
@@ -825,6 +1194,7 @@ public final class ManagerDashboard extends JFrame {
         gbc.gridy = y;
 
         JButton save = new JButton("Save Goal");
+        Icons.stylePrimary(save, "Save Goal");
         save.addActionListener(event -> {
             Employee employee = (Employee) employeePicker.getSelectedItem();
             if (employee == null) {
@@ -871,7 +1241,7 @@ public final class ManagerDashboard extends JFrame {
         JDialog dialog = new JDialog(this, "Give Feedback", true);
         dialog.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.insets = new Insets(8, 8, 8, 8);
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
         JComboBox<Employee> employeePicker = new JComboBox<>(teamMembers.toArray(new Employee[0]));
@@ -898,6 +1268,7 @@ public final class ManagerDashboard extends JFrame {
         gbc.gridy = y;
 
         JButton save = new JButton("Submit Feedback");
+        Icons.stylePrimary(save, "Submit Feedback");
         save.addActionListener(event -> {
             Employee employee = (Employee) employeePicker.getSelectedItem();
             if (employee == null) {
@@ -963,7 +1334,7 @@ public final class ManagerDashboard extends JFrame {
         JDialog dialog = new JDialog(this, "Edit Evaluation #" + evaluation.getEvalId(), true);
         dialog.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.insets = new Insets(8, 8, 8, 8);
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
         JComboBox<Integer> communication = ratingCombo();
@@ -1007,6 +1378,7 @@ public final class ManagerDashboard extends JFrame {
         gbc.gridy = y;
 
         JButton save = new JButton("Update");
+        Icons.stylePrimary(save, "Update");
         save.addActionListener(event -> {
             try {
                 Validator.validateRating((int) communication.getSelectedItem());
@@ -1069,7 +1441,7 @@ public final class ManagerDashboard extends JFrame {
         JDialog dialog = new JDialog(this, "Edit Goal #" + goal.getGoalId(), true);
         dialog.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.insets = new Insets(8, 8, 8, 8);
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
         JTextField title = new JTextField(goal.getTitle(), 20);
@@ -1104,6 +1476,7 @@ public final class ManagerDashboard extends JFrame {
         gbc.gridy = y;
 
         JButton save = new JButton("Update Goal");
+        Icons.stylePrimary(save, "Update Goal");
         save.addActionListener(event -> {
             try {
                 Validator.requireText(title.getText(), "Title");
@@ -1162,7 +1535,7 @@ public final class ManagerDashboard extends JFrame {
         JDialog dialog = new JDialog(this, "Edit Feedback #" + feedback.getFeedbackId(), true);
         dialog.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.insets = new Insets(8, 8, 8, 8);
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
         JComboBox<Integer> rating = ratingCombo();
@@ -1184,6 +1557,7 @@ public final class ManagerDashboard extends JFrame {
         gbc.gridy = y;
 
         JButton save = new JButton("Update Feedback");
+        Icons.stylePrimary(save, "Update Feedback");
         save.addActionListener(event -> {
             try {
                 Validator.requireText(comments.getText(), "Comments");
@@ -1253,7 +1627,7 @@ public final class ManagerDashboard extends JFrame {
         new SwingWorker<Void, Void>() {
             @Override
             protected Void doInBackground() throws Exception {
-                new service.ReportService().exportManagerReportCSV(managerId, path);
+                new ReportService().exportManagerReportCSV(managerId, path);
                 return null;
             }
 

@@ -3,7 +3,9 @@ package ui;
 import dao.DatabaseConnection;
 import dao.UserDAO;
 import model.User;
+import ui.components.RoundedPanel;
 import util.FileLogger;
+import util.Icons;
 
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
@@ -19,7 +21,6 @@ import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import java.awt.BorderLayout;
 import java.awt.Color;
-import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
@@ -29,7 +30,9 @@ import java.util.concurrent.ExecutionException;
 /**
  * Login window and role based entry point into the two dashboards.
  *
- * <p>Authentication is performed against the {@code users} table using
+ * <p>The login form lives on a single rounded white card centred on the
+ * {@code #F4F6FA} canvas, matching the Light SaaS Sidebar Redesign.
+ * Authentication is performed against the {@code users} table using
  * {@link dao.UserDAO#authenticate(String, String, String)}. Passwords are
  * compared against a salted PBKDF2 hash; legacy hashes are upgraded
  * transparently on the first successful sign-in.
@@ -50,55 +53,129 @@ public final class LoginFrame extends JFrame {
      */
     public LoginFrame() {
         setTitle("Performetrics - Login");
-        setSize(450, 360);
+        setSize(460, 620);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
-        setLayout(new BorderLayout());
 
-        JLabel title = new JLabel("Employee Performance System", SwingConstants.CENTER);
-        title.setFont(new Font("Segoe UI", Font.BOLD, 18));
-        title.setBorder(BorderFactory.createEmptyBorder(20, 10, 10, 10));
-        add(title, BorderLayout.NORTH);
+        // Outer canvas: the #F4F6FA background.
+        JPanel canvas = new JPanel(new BorderLayout());
+        canvas.setBackground(Icons.CANVAS_BG);
+        canvas.setBorder(new javax.swing.border.EmptyBorder(20, 20, 20, 20));
 
-        JPanel form = new JPanel(new GridBagLayout());
+        // Centring wrapper: places the card in the middle of the canvas.
+        JPanel centre = new JPanel(new GridBagLayout());
+        centre.setBackground(Icons.CANVAS_BG);
+        centre.setAlignmentX(0.5f);
+        centre.setAlignmentY(0.5f);
+
+        RoundedPanel card = new RoundedPanel(20);
+        card.setBackground(Icons.CARD_BG);
+        card.setLayout(new GridBagLayout());
+        card.setPreferredSize(new java.awt.Dimension(360, 520));
+        card.setMaximumSize(new java.awt.Dimension(360, 520));
+        card.setBorder(new javax.swing.border.EmptyBorder(30, 30, 30, 30));
+
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.insets = new Insets(8, 8, 8, 8);
         gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.weightx = 1.0;
+        gbc.anchor = GridBagConstraints.NORTH;
 
+        // Brand mark.
+        RoundedPanel brandMark = new RoundedPanel(12, null, 0);
+        brandMark.setBackground(Icons.PRIMARY);
+        brandMark.setBorder(new javax.swing.border.EmptyBorder(0, 0, 0, 0));
+        brandMark.setLayout(new BorderLayout());
+        brandMark.setPreferredSize(new java.awt.Dimension(46, 46));
+        brandMark.setMinimumSize(new java.awt.Dimension(46, 46));
+        brandMark.add(new JLabel(Icons.vector(Icons.Symbol.BRAND_CUBE, 24, Color.WHITE), SwingConstants.CENTER),
+                BorderLayout.CENTER);
         gbc.gridx = 0;
         gbc.gridy = 0;
-        form.add(new JLabel("Email:"), gbc);
-        gbc.gridx = 1;
-        form.add(emailField, gbc);
+        gbc.fill = GridBagConstraints.NONE;
+        gbc.anchor = GridBagConstraints.CENTER;
+        gbc.insets = new Insets(0, 0, 12, 0);
+        card.add(brandMark, gbc);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
 
-        gbc.gridx = 0;
+        // Title.
+        JLabel title = new JLabel("Performetrics", SwingConstants.CENTER);
+        title.setFont(Icons.bold(24f));
+        title.setForeground(Icons.HEADING_TEXT);
         gbc.gridy = 1;
-        form.add(new JLabel("Password:"), gbc);
-        gbc.gridx = 1;
-        form.add(passwordField, gbc);
+        gbc.insets = new Insets(0, 0, 4, 0);
+        card.add(title, gbc);
 
-        gbc.gridx = 0;
+        // Subtitle.
+        JLabel subtitle = new JLabel("Sign in to your performance dashboard", SwingConstants.CENTER);
+        subtitle.setFont(Icons.font(13f));
+        subtitle.setForeground(Icons.MUTED_TEXT);
         gbc.gridy = 2;
-        form.add(new JLabel("Role:"), gbc);
-        gbc.gridx = 1;
-        form.add(roleCombo, gbc);
+        gbc.insets = new Insets(0, 0, 26, 0);
+        card.add(subtitle, gbc);
 
-        gbc.gridx = 0;
+        // Email field.
         gbc.gridy = 3;
-        gbc.gridwidth = 2;
-        loginButton.setBackground(new Color(41, 98, 255));
-        loginButton.setForeground(Color.WHITE);
-        loginButton.setFocusPainted(false);
-        loginButton.setFont(new Font("Segoe UI", Font.BOLD, 13));
-        loginButton.addActionListener(event -> doLogin());
-        form.add(loginButton, gbc);
+        gbc.insets = new Insets(0, 0, 0, 0);
+        gbc.anchor = GridBagConstraints.NORTH;
+        JLabel emailLabel = new JLabel("E-mail address");
+        emailLabel.setFont(Icons.font(12f).deriveFont(java.awt.Font.BOLD));
+        emailLabel.setForeground(Icons.BODY_TEXT);
+        card.add(emailLabel, gbc);
 
         gbc.gridy = 4;
-        statusLabel.setFont(new Font("Segoe UI", Font.ITALIC, 11));
-        statusLabel.setForeground(Color.GRAY);
-        form.add(statusLabel, gbc);
+        gbc.insets = new Insets(4, 0, 16, 0);
+        Icons.styleInput(emailField);
+        emailField.putClientProperty("JTextField.placeholderText", "name@company.com");
+        card.add(emailField, gbc);
 
-        add(form, BorderLayout.CENTER);
+        // Password field.
+        gbc.gridy = 5;
+        gbc.insets = new Insets(0, 0, 0, 0);
+        JLabel passwordLabel = new JLabel("Password");
+        passwordLabel.setFont(Icons.font(12f).deriveFont(java.awt.Font.BOLD));
+        passwordLabel.setForeground(Icons.BODY_TEXT);
+        card.add(passwordLabel, gbc);
+
+        gbc.gridy = 6;
+        gbc.insets = new Insets(4, 0, 16, 0);
+        Icons.styleInput(passwordField);
+        passwordField.putClientProperty("JTextField.placeholderText", "••••••••");
+        card.add(passwordField, gbc);
+
+        // Role selector.
+        gbc.gridy = 7;
+        gbc.insets = new Insets(0, 0, 0, 0);
+        JLabel roleLabel = new JLabel("Role");
+        roleLabel.setFont(Icons.font(12f).deriveFont(java.awt.Font.BOLD));
+        roleLabel.setForeground(Icons.BODY_TEXT);
+        card.add(roleLabel, gbc);
+
+        gbc.gridy = 8;
+        gbc.insets = new Insets(4, 0, 22, 0);
+        roleCombo.setFont(Icons.font(13f));
+        roleCombo.setBorder(new javax.swing.border.EmptyBorder(8, 12, 8, 12));
+        card.add(roleCombo, gbc);
+
+        // Login button.
+        gbc.gridy = 9;
+        gbc.insets = new Insets(0, 0, 0, 0);
+        Icons.stylePrimary(loginButton, "Sign in");
+        loginButton.setPreferredSize(new java.awt.Dimension(0, 44));
+        loginButton.addActionListener(event -> doLogin());
+        card.add(loginButton, gbc);
+
+        // Status label.
+        gbc.gridy = 10;
+        gbc.insets = new Insets(10, 0, 0, 0);
+        statusLabel.setFont(Icons.font(11f).deriveFont(java.awt.Font.ITALIC));
+        statusLabel.setForeground(Icons.MUTED_TEXT);
+        statusLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        card.add(statusLabel, gbc);
+
+        centre.add(card, new GridBagConstraints());
+        canvas.add(centre, BorderLayout.CENTER);
+        add(canvas, BorderLayout.CENTER);
 
         // The Enter key submits the form.
         getRootPane().setDefaultButton(loginButton);
